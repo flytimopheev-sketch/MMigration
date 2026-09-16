@@ -365,7 +365,7 @@ impl DatabaseManager {
                 error_message: row.get("error_message")?,
                 duration_secs: row.get("duration_secs")?,
             })
-        }).optional()?;
+        }).ok().flatten()?;
 
         Ok(row)
     }
@@ -560,7 +560,7 @@ impl DatabaseManager {
 
         let value = stmt.query_row(params![key], |row| {
             row.get::<_, String>("value")
-        }).optional()?;
+        }).ok().flatten()?;
 
         Ok(value)
     }

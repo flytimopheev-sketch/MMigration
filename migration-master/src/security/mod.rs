@@ -7,6 +7,9 @@ use age::{Encryptor, Decryptor, Identity};
 use serde::{Deserialize, Serialize};
 use crate::error::{MigrationError, Result};
 
+// Используем passphrase_scrypt для работы с паролями
+use age::scrypt as passphrase_scrypt;
+
 /// Результат вычисления хеша
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HashResult {
@@ -226,7 +229,7 @@ pub fn decrypt_data(encrypted_data: &[u8], password: &str) -> Result<Vec<u8>> {
         .map_err(|e| MigrationError::Encryption(e.to_string()))?;
     
     let passphrase = Secret::new(password.as_bytes().to_vec());
-    let identity = age::scrypt::Identity::from_passphrase(passphrase);
+    let identity = passphrase_scrypt::Identity::from_passphrase(passphrase);
     
     let mut reader = decryptor.decrypt(&[&identity as &dyn Identity])
         .map_err(|e| MigrationError::Encryption(e.to_string()))?
