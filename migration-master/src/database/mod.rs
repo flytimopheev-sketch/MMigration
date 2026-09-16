@@ -342,12 +342,15 @@ impl DatabaseManager {
             Ok(MigrationRecord {
                 id: row.get("id")?,
                 started_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("started_at")?)
-                    .map(|d| d.with_timezone(&Utc))?,
+                    .map(|d| d.with_timezone(&Utc))
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?,
                 finished_at: row.get::<_, Option<String>>("finished_at")?
                     .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                     .map(|d| d.with_timezone(&Utc)),
-                operation_type: serde_json::from_str(&row.get::<_, String>("operation_type")?)?,
-                status: serde_json::from_str(&row.get::<_, String>("status")?)?,
+                operation_type: serde_json::from_str(&row.get::<_, String>("operation_type")?)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?,
+                status: serde_json::from_str(&row.get::<_, String>("status")?)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?,
                 source: row.get("source")?,
                 target: row.get("target")?,
                 username: row.get("username")?,
@@ -365,7 +368,7 @@ impl DatabaseManager {
                 error_message: row.get("error_message")?,
                 duration_secs: row.get("duration_secs")?,
             })
-        }).ok().flatten()?;
+        }).ok().and_then(|r| r.ok())?;
 
         Ok(row)
     }
@@ -560,7 +563,7 @@ impl DatabaseManager {
 
         let value = stmt.query_row(params![key], |row| {
             row.get::<_, String>("value")
-        }).ok().flatten()?;
+        }).ok().and_then(|r| r.ok())?;
 
         Ok(value)
     }
