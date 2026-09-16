@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::io::{Read, Write, BufReader, BufWriter};
 use sha2::{Sha256, Digest};
-use age::{Encryptor, Decryptor, Identity, passphrase::ProtectedIdentity};
+use age::{Encryptor, Decryptor, Identity};
 use serde::{Deserialize, Serialize};
 use crate::error::{MigrationError, Result};
 
@@ -220,10 +220,13 @@ pub fn encrypt_data(data: &[u8], password: &str) -> Result<Vec<u8>> {
 
 /// Расшифрование данных из памяти
 pub fn decrypt_data(encrypted_data: &[u8], password: &str) -> Result<Vec<u8>> {
+    use age::secrecy::Secret;
+    
     let decryptor = Decryptor::new(encrypted_data)
         .map_err(|e| MigrationError::Encryption(e.to_string()))?;
     
-    let identity = ProtectedIdentity::from_passphrase(password);
+    let passphrase = Secret::new(password.as_bytes().to_vec());
+    let identity = age::scrypt::Identity::from_passphrase(passphrase);
     
     let mut reader = decryptor.decrypt(&[&identity as &dyn Identity])
         .map_err(|e| MigrationError::Encryption(e.to_string()))?
