@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Migration Master
+Name[ru]=Мастер миграции
+Comment=User profile migration tool for RED OS
+Comment[ru]=Инструмент миграции пользовательского профиля для РЕД ОС
+Exec=migration-master gui
+Icon=migration-master
+Terminal=false
+Type=Application
+Categories=System;Utility;
+Keywords=migration;backup;restore;profile;
+Keywords[ru]=миграция;резервная копия;восстановление;профиль;
+StartupNotify=true
+X-GNOME-Autostart-enabled=false
