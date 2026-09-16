@@ -1,0 +1,211 @@
+.TH MIGRATION-MASTER 1 "2024-01-15" "Migration Master 0.1.0" "Команды пользователя"
+
+.SH ИМЯ
+migration-master \- Мастер миграции пользователя для РЕД ОС Linux
+
+.SH СИНОВПСИС
+.B migration-master
+[\fIОПЦИИ\fR] \fBКОМАНДА\fR [\fIАРГУМЕНТЫ\fR]
+
+.SH ОПИСАНИЕ
+Migration Master - это приложение для безопасного переноса пользовательского профиля
+со старого компьютера или старой установки на новый компьютер.
+
+.SH КОМАНДЫ
+.TP
+.B scan
+Сканирование текущего профиля пользователя
+.RS
+.br
+\fB--json\fR          Вывод в формате JSON
+.br
+\fB-c, --components\fR Компоненты для сканирования (через запятую)
+.br
+\fB--quick\fR          Быстрая оценка без детального сканирования
+.RE
+
+.TP
+.B create-archive
+Создание зашифрованного архива профиля
+.RS
+.br
+\fB-o, --output\fR     Путь к выходному файлу
+.br
+\fB-p, --password\fR   Пароль для шифрования
+.br
+\fB--interactive\fR    Интерактивный ввод пароля
+.br
+\fB-c, --components\fR Компоненты для включения
+.br
+\fB-C, --compression\fR Уровень сжатия (0-22, по умолчанию 3)
+.br
+\fB--dry-run\fR        Dry-run (без создания файла)
+.RE
+
+.TP
+.B inspect-archive \fIАРХИВ\fR
+Проверка содержимого архива
+.RS
+.br
+\fB--json\fR           Вывод в формате JSON
+.br
+\fB-v, --verbose\fR    Подробная информация
+.RE
+
+.TP
+.B restore \fIАРХИВ\fR
+Восстановление из архива
+.RS
+.br
+\fB-p, --password\fR   Пароль для расшифрования
+.br
+\fB--components\fR     Компоненты для восстановления
+.br
+\fB-t, --target\fR     Целевая директория
+.br
+\fB--dry-run\fR        Dry-run (без внесения изменений)
+.br
+\fB--conflict-strategy\fR Стратегия конфликтов (skip|replace|rename|ask)
+.br
+\fB--backup\fR         Создать резервную копию
+.RE
+
+.TP
+.B migrate-ssh \fIХОСТ\fR
+Прямая миграция по SSH
+.RS
+.br
+\fB-P, --port\fR       Порт SSH (по умолчанию 22)
+.br
+\fB-i, --identity\fR   Путь к SSH ключу
+.br
+\fB-c, --components\fR Компоненты для переноса
+.br
+\fB--dry-run\fR        Dry-run (без передачи данных)
+.br
+\fB--rate-limit\fR     Ограничение скорости (байт/сек)
+.br
+\fB--compress\fR       Использовать сжатие
+.RE
+
+.TP
+.B verify \fIПУТЬ\fR
+Проверка контрольных сумм
+.RS
+.br
+\fB-e, --expected\fR   Ожидаемый хеш
+.br
+\fB--algorithm\fR      Алгоритм (sha256)
+.RE
+
+.TP
+.B list-packages
+Список установленных пакетов
+.RS
+.br
+\fB--json\fR           Вывод в формате JSON
+.br
+\fB-c, --category\fR   Фильтр по категории
+.br
+\fB--user-only\fR      Только пользовательские пакеты
+.RE
+
+.TP
+.B list-printers
+Список принтеров
+.RS
+.br
+\fB--json\fR           Вывод в формате JSON
+.br
+\fB-v, --verbose\fR    Подробная информация
+.RE
+
+.TP
+.B report
+Генерация отчёта о последней операции
+.RS
+.br
+\fB-i, --id\fR         ID миграции
+.br
+\fB-f, --format\fR     Формат (text|json|html)
+.br
+\fB-o, --output\fR     Путь к файлу отчёта
+.RE
+
+.TP
+.B config \fIДЕЙСТВИЕ\fR [\fIКЛЮЧ\fR] [\fIЗНАЧЕНИЕ\fR]
+Управление настройками
+.RS
+.br
+Действия: get, set, list, reset
+.RE
+
+.TP
+.B gui
+Запуск GUI интерфейса
+.RS
+.br
+\fB--dark-theme\fR     Тёмная тема
+.RE
+
+.SH ОБЩИЕ ОПЦИИ
+.TP
+.B -v, --verbose
+Уровень логирования (debug, info, warn, error)
+
+.TP
+.B -c, --config
+Путь к файлу конфигурации
+
+.TP
+.B -h, --help
+Показать справку
+
+.TP
+.B -V, --version
+Показать версию
+
+.SH ПРИМЕРЫ
+.nf
+# Сканирование профиля
+migration-master scan
+
+# Создание зашифрованного архива
+migration-master create-archive -o backup.rmm -p
+
+# Восстановление из архива
+migration-master restore backup.rmm
+
+# SSH миграция
+migration-master migrate-ssh user@192.168.1.100
+
+# Проверка хеша
+migration-master verify file.txt -e <hash>
+.fi
+
+.SH БЕЗОПАСНОСТЬ
+Приложение использует age для шифрования архивов и SHA-256 для проверки целостности.
+Приватные SSH-ключи никогда не копируются без явного подтверждения пользователя.
+
+.SH ФАЙЛЫ
+.I ~/.config/migration-master/config.toml
+.RS
+Файл конфигурации
+.RE
+
+.I ~/.local/share/migration-master/migrations.db
+.RS
+База данных истории миграций
+.RE
+
+.SH АВТОРЫ
+Migration Master Team <team@redos.local>
+
+.SH ЛИЦЕНЗИЯ
+GPL-3.0
+
+.SH СМОТРИ ТАКЖЕ
+.BR ssh(1),
+.BR tar(1),
+.BR cups(8),
+.BR rpm(8)

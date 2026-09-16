@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.redos.migration-master</id>
+  <name>Migration Master</name>
+  <name xml:lang="ru">Мастер миграции</name>
+  <summary>User profile migration tool for RED OS</summary>
+  <summary xml:lang="ru">Инструмент миграции пользовательского профиля для РЕД ОС</summary>
+  <description>
+    <p>Migration Master - это приложение для безопасного переноса пользовательского профиля со старого компьютера или старой установки на новый компьютер.</p>
+    <p>Основные возможности:</p>
+    <ul>
+      <li>Создание зашифрованных архивов профиля</li>
+      <li>Прямая миграция по SSH</li>
+      <li>Перенос настроек приложений (Firefox, LibreOffice, VS Code)</li>
+      <li>Перенос SSH-ключей с соблюдением безопасности</li>
+      <li>Перенос принтеров CUPS</li>
+      <li>Экспорт списка установленных пакетов</li>
+      <li>Проверка контрольных сумм файлов</li>
+    </ul>
+  </description>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0</project_license>
+  <url type="homepage">https://github.com/redos/migration-master</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Главный экран мастера миграции</caption>
+      <image>https://github.com/redos/migration-master/raw/main/screenshots/main.png</image>
+    </screenshot>
+  </screenshots>
+  <provides>
+    <binary>migration-master</binary>
+  </provides>
+  <launchable type="desktop-id">migration-master.desktop</launchable>
+  <categories>
+    <category>System</category>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>migration</keyword>
+    <keyword>backup</keyword>
+    <keyword>restore</keyword>
+    <keyword>profile</keyword>
+    <keyword xml:lang="ru">миграция</keyword>
+    <keyword xml:lang="ru">резервная копия</keyword>
+    <keyword xml:lang="ru">восстановление</keyword>
+  </keywords>
+  <developer_name>Migration Master Team</developer_name>
+  <update_contact>team@redos.local</update_contact>
+  <content_rating type="oars-1.1"/>
+</component>
