@@ -227,7 +227,7 @@ impl SshTransferManager {
     }
 
     /// Получить информацию о удаленной системе
-    pub fn analyze_remote_system(&self) -> Result<RemoteSystemInfo, Box<dyn std::error::Error>> {
+    pub fn analyze_remote_system(&mut self) -> Result<RemoteSystemInfo, Box<dyn std::error::Error>> {
         self.logger.info("ssh_transfer", "Анализ удаленной системы...");
 
         // Hostname
@@ -303,7 +303,7 @@ impl SshTransferManager {
 
     /// Передать файлы через rsync
     pub fn transfer_files_rsync(
-        &self,
+        &mut self,
         source_path: &Path,
         dest_path: &Path,
         components: &[MigrationComponent],
@@ -341,7 +341,7 @@ impl SshTransferManager {
         );
 
         if let SshAuthMethod::KeyFile(ref path) = self.config.auth_method {
-            ssh_opts.push_str(&format!(" -i {}", path));
+            ssh_opts.push_str(&format!(" -i {}", path.display()));
         }
 
         args.push(format!("--rsh=ssh {}", ssh_opts));
@@ -386,7 +386,7 @@ impl SshTransferManager {
 
     /// Передать файлы через tar + ssh (альтернатива rsync)
     pub fn transfer_files_tar_ssh(
-        &self,
+        &mut self,
         source_path: &Path,
         dest_path: &Path,
         components: &[MigrationComponent],
@@ -411,7 +411,7 @@ impl SshTransferManager {
                 // Команда для создания tar и отправки по ssh
                 let tar_cmd = format!(
                     "tar czf - -C {} {}",
-                    source_path,
+                    source_path.display(),
                     rel_path
                 );
 
@@ -501,7 +501,7 @@ impl SshTransferManager {
 
         match &self.config.auth_method {
             SshAuthMethod::KeyFile(path) => {
-                args.push_str(&format!(" -i {}", path));
+                args.push_str(&format!(" -i {}", path.display()));
             }
             SshAuthMethod::Password(_) => {
                 // Обработка пароля отдельно
@@ -514,7 +514,7 @@ impl SshTransferManager {
 
     /// Проверить контрольные суммы после передачи
     pub fn verify_checksums(
-        &self,
+        &mut self,
         source_path: &Path,
         dest_path: &Path,
         components: &[MigrationComponent],
