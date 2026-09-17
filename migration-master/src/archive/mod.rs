@@ -600,7 +600,7 @@ mod tests {
     fn test_component_to_prefix() {
         assert_eq!(ArchiveManager::component_to_prefix(&MigrationComponent::Desktop), "Desktop");
         assert_eq!(ArchiveManager::component_to_prefix(&MigrationComponent::SshKeys), ".ssh");
-        assert_eq!(ArchiveManager::component_to_prefix(&MigrationComponent::Config), ".config");
+        assert_eq!(ArchiveManager::component_to_prefix(&MigrationComponent::AppConfigs), ".config");
     }
     
     #[test]

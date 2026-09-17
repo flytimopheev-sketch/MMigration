@@ -66,7 +66,7 @@ impl SshTransferManager {
     }
 
     /// Проверить SSH подключение
-    pub fn check_connection(&self) -> Result<SshConnectionResult, Box<dyn std::error::Error>> {
+    pub fn check_connection(&mut self) -> Result<SshConnectionResult, Box<dyn std::error::Error>> {
         self.logger.info("ssh_transfer", &format!("Проверка SSH подключения к {}:{}", self.config.host, self.config.port));
 
         // Проверяем доступность порта
@@ -155,7 +155,7 @@ impl SshTransferManager {
     }
 
     /// Выполнить команду по SSH
-    fn run_ssh_command(&self, command: &str) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    fn run_ssh_command(&mut self, command: &str) -> Result<std::process::Output, Box<dyn std::error::Error>> {
         let mut args = Vec::new();
 
         // Порт
@@ -275,12 +275,12 @@ impl SshTransferManager {
             MigrationComponent::Videos,
             MigrationComponent::Music,
             MigrationComponent::Templates,
-            MigrationComponent::Config,
+            MigrationComponent::AppConfigs,
             MigrationComponent::SshKeys,
-            MigrationComponent::LocalData,
+            MigrationComponent::AppData,
         ] {
             let path = component.get_default_path().unwrap_or_default();
-            let check_cmd = format!("[ -e '{}' ] && echo 'exists'", path.display());
+            let check_cmd = format!("[ -e '{}' ] && echo 'exists'", path);
             let result = self.run_ssh_command(&check_cmd)?;
             if String::from_utf8_lossy(&result.stdout).contains("exists") {
                 available_components.push(component.clone());
@@ -341,7 +341,7 @@ impl SshTransferManager {
         );
 
         if let SshAuthMethod::KeyFile(ref path) = self.config.auth_method {
-            ssh_opts.push_str(&format!(" -i {}", path.display()));
+            ssh_opts.push_str(&format!(" -i {}", path));
         }
 
         args.push(format!("--rsh=ssh {}", ssh_opts));
@@ -411,8 +411,8 @@ impl SshTransferManager {
                 // Команда для создания tar и отправки по ssh
                 let tar_cmd = format!(
                     "tar czf - -C {} {}",
-                    source_path.display(),
-                    rel_path.display()
+                    source_path,
+                    rel_path
                 );
 
                 let ssh_mkdir = format!("ssh {} mkdir -p {}", 
@@ -501,7 +501,7 @@ impl SshTransferManager {
 
         match &self.config.auth_method {
             SshAuthMethod::KeyFile(path) => {
-                args.push_str(&format!(" -i {}", path.display()));
+                args.push_str(&format!(" -i {}", path));
             }
             SshAuthMethod::Password(_) => {
                 // Обработка пароля отдельно
