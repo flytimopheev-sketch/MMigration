@@ -185,16 +185,15 @@ pub fn decrypt_file(
     let decryptor = Decryptor::new(BufReader::new(input_file))
         .map_err(|e| MigrationError::Encryption(e.to_string()))?;
     
-    // Создаём identity из passphrase используя scrypt
-    let passphrase_secret = Secret::new(password.into_bytes());
-    let scrypt_identity = age::scrypt::Identity::new(passphrase_secret)
+    // Создаём scrypt identity из пароля (age 0.12 API)
+    let passphrase = Secret::new(password.to_string());
+    let scrypt_identity = age::scrypt::Identity::new(passphrase.clone())
         .map_err(|e| MigrationError::Encryption(format!("Ошибка создания scrypt identity: {}", e)))?;
     
     let identities: Vec<&dyn Identity> = vec![&scrypt_identity];
     
     let mut reader = decryptor.decrypt(&identities)
-        .map_err(|e| MigrationError::Encryption(e.to_string()))?
-        .ok_or_else(|| MigrationError::Encryption("Неверный пароль".to_string()))?;
+        .map_err(|e| MigrationError::Encryption(e.to_string()))?;
     
     let mut writer = BufWriter::new(output_file);
     let mut buffer = vec![0u8; 8192];
@@ -214,7 +213,8 @@ pub fn decrypt_file(
 
 /// Шифрование данных в памяти
 pub fn encrypt_data(data: &[u8], password: &str) -> Result<Vec<u8>> {
-    let encryptor = Encryptor::with_user_passphrase(password);
+    let passphrase_secret = Secret::new(password.to_string());
+    let encryptor = Encryptor::with_user_passphrase(passphrase_secret);
     
     let mut encrypted = Vec::new();
     {
@@ -230,18 +230,16 @@ pub fn encrypt_data(data: &[u8], password: &str) -> Result<Vec<u8>> {
 
 /// Расшифрование данных из памяти
 pub fn decrypt_data(encrypted_data: &[u8], password: &str) -> Result<Vec<u8>> {
-    use age::secrecy::Secret;
-    
     let decryptor = Decryptor::new(encrypted_data)
         .map_err(|e| MigrationError::Encryption(e.to_string()))?;
     
-    // Создаём identity из passphrase используя публичный API
-    let identities: Vec<Box<dyn Identity>> = vec![
-        Box::new(age::Identity::from_passphrase(password)
-            .map_err(|e| MigrationError::Encryption(format!("Ошибка создания identity: {}", e)))?)
-    ];
+    // Создаём scrypt identity из пароля
+    let scrypt_identity = age::scrypt::Identity::new(password)
+        .map_err(|e| MigrationError::Encryption(format!("Ошибка создания scrypt identity: {}", e)))?;
     
-    let mut reader = decryptor.decrypt(&identities.iter().map(|i| i.as_ref()).collect::<Vec<_>>())
+    let identities: Vec<&dyn Identity> = vec![&scrypt_identity];
+    
+    let mut reader = decryptor.decrypt(&identities)
         .map_err(|e| MigrationError::Encryption(e.to_string()))?
         .ok_or_else(|| MigrationError::Encryption("Неверный пароль".to_string()))?;
     

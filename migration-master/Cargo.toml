@@ -32,7 +32,7 @@ zstd = "0.13"
 flate2 = "1.0"
 
 # Encryption
-age = { version = "0.10", features = ["armor"] }
+age = { version = "0.12", features = ["armor"] }
 
 # Hashing
 sha2 = "0.10"
@@ -52,6 +52,8 @@ sysinfo = "0.30"
 whoami = "1.4"
 hostname = "0.3"
 dirs = "5.0"
+users = "0.11"
+which = "6.0"
 
 # File system utilities
 walkdir = "2.4"
