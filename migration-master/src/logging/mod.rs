@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Write, BufWriter};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::error::{MigrationError, Result};
+use crate::error::Result;
 
 /// Уровни логирования
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
