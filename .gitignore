@@ -1,6 +1,4 @@
 ```
-# Rust/Cargo specific
 target/
-Cargo.lock
 **/*.rs.bk
 ```

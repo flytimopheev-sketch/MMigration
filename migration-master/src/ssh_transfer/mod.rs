@@ -66,13 +66,15 @@ impl SshTransferManager {
     }
 
     /// Проверить SSH подключение
-    pub fn check_connection(&self) -> Result<SshConnectionResult, Box<dyn std::error::Error>> {
-        self.logger.info(&format!("Проверка SSH подключения к {}:{}", self.config.host, self.config.port));
+    pub fn check_connection(&mut self) -> Result<SshConnectionResult, Box<dyn std::error::Error>> {
+        self.logger.info("ssh_transfer", &format!("Проверка SSH подключения к {}:{}", self.config.host, self.config.port));
 
         // Проверяем доступность порта
         let addr = format!("{}:{}", self.config.host, self.config.port);
         match TcpStream::connect(&addr) {
-            Ok(_) => self.logger.info("Порт SSH доступен"),
+            Ok(_) => {
+                self.logger.info("ssh_transfer", "Порт SSH доступен").ok();
+            },
             Err(e) => {
                 return Ok(SshConnectionResult {
                     is_connected: false,
@@ -105,7 +107,7 @@ impl SshTransferManager {
         let free_space_str = String::from_utf8_lossy(&df_output.stdout).trim().to_string();
         let available_disk_space = parse_human_readable_size(&free_space_str).unwrap_or(0);
 
-        self.logger.info(&format!("SSH подключение успешно. Хост: {}, ОС: {}", remote_hostname, remote_os_info));
+        self.logger.info("ssh_transfer", &format!("SSH подключение успешно. Хост: {}, ОС: {}", remote_hostname, remote_os_info));
 
         Ok(SshConnectionResult {
             is_connected: true,
@@ -153,7 +155,7 @@ impl SshTransferManager {
     }
 
     /// Выполнить команду по SSH
-    fn run_ssh_command(&self, command: &str) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    fn run_ssh_command(&mut self, command: &str) -> Result<std::process::Output, Box<dyn std::error::Error>> {
         let mut args = Vec::new();
 
         // Порт
@@ -199,7 +201,7 @@ impl SshTransferManager {
         args.push(user_host);
         args.push(command.to_string());
 
-        self.logger.debug(&format!("Выполнение SSH команды: ssh {}", args.join(" ")));
+        self.logger.debug("ssh_transfer", &format!("Выполнение SSH команды: ssh {}", args.join(" ")));
 
         let mut cmd = Command::new("ssh");
         cmd.args(&args);
@@ -225,8 +227,8 @@ impl SshTransferManager {
     }
 
     /// Получить информацию о удаленной системе
-    pub fn analyze_remote_system(&self) -> Result<RemoteSystemInfo, Box<dyn std::error::Error>> {
-        self.logger.info("Анализ удаленной системы...");
+    pub fn analyze_remote_system(&mut self) -> Result<RemoteSystemInfo, Box<dyn std::error::Error>> {
+        self.logger.info("ssh_transfer", "Анализ удаленной системы...");
 
         // Hostname
         let hostname_output = self.run_ssh_command("hostname")?;
@@ -273,19 +275,19 @@ impl SshTransferManager {
             MigrationComponent::Videos,
             MigrationComponent::Music,
             MigrationComponent::Templates,
-            MigrationComponent::Config,
+            MigrationComponent::AppConfigs,
             MigrationComponent::SshKeys,
-            MigrationComponent::LocalData,
+            MigrationComponent::AppData,
         ] {
             let path = component.get_default_path().unwrap_or_default();
-            let check_cmd = format!("[ -e '{}' ] && echo 'exists'", path.display());
+            let check_cmd = format!("[ -e '{}' ] && echo 'exists'", path);
             let result = self.run_ssh_command(&check_cmd)?;
             if String::from_utf8_lossy(&result.stdout).contains("exists") {
                 available_components.push(component.clone());
             }
         }
 
-        self.logger.info(&format!("Найдено {} компонентов на удаленной системе", available_components.len()));
+        self.logger.info("ssh_transfer", &format!("Найдено {} компонентов на удаленной системе", available_components.len()));
 
         Ok(RemoteSystemInfo {
             hostname,
@@ -301,13 +303,13 @@ impl SshTransferManager {
 
     /// Передать файлы через rsync
     pub fn transfer_files_rsync(
-        &self,
+        &mut self,
         source_path: &Path,
         dest_path: &Path,
         components: &[MigrationComponent],
         dry_run: bool,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        self.logger.info(&format!("Передача файлов через rsync: {:?} -> {:?}", source_path, dest_path));
+        self.logger.info("ssh_transfer", &format!("Передача файлов через rsync: {:?} -> {:?}", source_path, dest_path));
 
         let mut args = vec![
             "-avz".to_string(),           // archive, verbose, compress
@@ -318,7 +320,7 @@ impl SshTransferManager {
 
         if dry_run {
             args.push("--dry-run".to_string());
-            self.logger.info("Режим Dry-Run активирован");
+            self.logger.info("ssh_transfer", "Режим Dry-Run активирован");
         }
 
         // Compression
@@ -360,7 +362,7 @@ impl SshTransferManager {
             }
         }
 
-        self.logger.debug(&format!("rsync команда: {}", args.join(" ")));
+        self.logger.debug("ssh_transfer", &format!("rsync команда: {}", args.join(" ")));
 
         let mut cmd = Command::new("rsync");
         cmd.args(&args);
@@ -377,20 +379,20 @@ impl SshTransferManager {
         // Парсим вывод rsync для получения размера переданных данных
         let transferred_size = parse_rsync_output(&String::from_utf8_lossy(&output.stdout));
 
-        self.logger.info(&format!("Передача завершена. Передано {} байт", transferred_size));
+        self.logger.info("ssh_transfer", &format!("Передача завершена. Передано {} байт", transferred_size));
 
         Ok(transferred_size)
     }
 
     /// Передать файлы через tar + ssh (альтернатива rsync)
     pub fn transfer_files_tar_ssh(
-        &self,
+        &mut self,
         source_path: &Path,
         dest_path: &Path,
         components: &[MigrationComponent],
         dry_run: bool,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        self.logger.info("Передача файлов через tar+ssh...");
+        self.logger.info("ssh_transfer", "Передача файлов через tar+ssh...");
 
         let mut total_size = 0u64;
 
@@ -410,7 +412,7 @@ impl SshTransferManager {
                 let tar_cmd = format!(
                     "tar czf - -C {} {}",
                     source_path.display(),
-                    rel_path.display()
+                    rel_path
                 );
 
                 let ssh_mkdir = format!("ssh {} mkdir -p {}", 
@@ -419,7 +421,7 @@ impl SshTransferManager {
                 );
 
                 if dry_run {
-                    self.logger.info(&format!("Dry-run: {}", tar_cmd));
+                    self.logger.info("ssh_transfer", &format!("Dry-run: {}", tar_cmd));
                     continue;
                 }
 
@@ -476,7 +478,7 @@ impl SshTransferManager {
             }
         }
 
-        self.logger.info(&format!("Передача tar+ssh завершена. Всего {} байт", total_size));
+        self.logger.info("ssh_transfer", &format!("Передача tar+ssh завершена. Всего {} байт", total_size));
 
         Ok(total_size)
     }
@@ -512,12 +514,12 @@ impl SshTransferManager {
 
     /// Проверить контрольные суммы после передачи
     pub fn verify_checksums(
-        &self,
+        &mut self,
         source_path: &Path,
         dest_path: &Path,
         components: &[MigrationComponent],
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        self.logger.info("Проверка контрольных сумм...");
+        self.logger.info("ssh_transfer", "Проверка контрольных сумм...");
 
         for component in components {
             if let Some(rel_path) = component.get_default_path() {
@@ -548,18 +550,18 @@ impl SshTransferManager {
                 let dest_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
                 if source_hash != dest_hash {
-                    self.logger.error(&format!(
+                    self.logger.error("ssh_transfer", &format!(
                         "Несоответствие хешей для {:?}: источник={}, назначение={}",
                         rel_path, source_hash, dest_hash
                     ));
                     return Ok(false);
                 }
 
-                self.logger.debug(&format!("Хеши совпадают для {:?}", rel_path));
+                self.logger.debug("ssh_transfer", &format!("Хеши совпадают для {:?}", rel_path));
             }
         }
 
-        self.logger.info("Все контрольные суммы совпадают");
+        self.logger.info("ssh_transfer", "Все контрольные суммы совпадают");
         Ok(true)
     }
 

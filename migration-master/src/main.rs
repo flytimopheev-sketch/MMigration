@@ -276,7 +276,7 @@ fn cmd_config(action: String, key: Option<String>, value: Option<String>) -> Res
         }
         "reset" => {
             let config = AppConfig::default();
-            save_config(&config)?;
+            save_config(&config).map_err(|e| MigrationError::Generic(e.to_string()))?;
             println!("Конфигурация сброшена");
         }
         _ => {

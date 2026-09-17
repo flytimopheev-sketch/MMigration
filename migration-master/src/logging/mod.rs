@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Write, BufWriter};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::error::{MigrationError, Result};
+use crate::error::Result;
 
 /// Уровни логирования
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,8 +164,8 @@ impl LogManager {
 
             // Сортируем по времени модификации
             log_files.sort_by(|a, b| {
-                let time_a = a.1.and_then(|x| x).unwrap_or(std::time::UNIX_EPOCH);
-                let time_b = b.1.and_then(|x| x).unwrap_or(std::time::UNIX_EPOCH);
+                let time_a = a.1.unwrap_or(std::time::UNIX_EPOCH);
+                let time_b = b.1.unwrap_or(std::time::UNIX_EPOCH);
                 time_b.cmp(&time_a)
             });
 

@@ -178,13 +178,13 @@ impl ProfileScanner {
             username: self.username.clone(),
             uid: self.uid,
             gid: self.gid,
-            files,
             total_files: files.len(),
             total_size,
             files_by_component,
             size_by_component,
             excluded_paths,
             errors,
+            files,
         })
     }
 
@@ -223,17 +223,16 @@ impl ProfileScanner {
             .into_iter()
             .filter_entry(|e| {
                 // Пропускаем symlink на сокеты и устройства
-                if let Ok(ft) = e.file_type() {
-                    if ft.is_symlink() {
-                        // Проверяем куда ведёт symlink
-                        if let Ok(target) = fs::read_link(e.path()) {
-                            let target_str = target.to_string_lossy();
-                            if target_str.starts_with("/proc/") 
-                                || target_str.starts_with("/sys/")
-                                || target_str.starts_with("/dev/")
-                            {
-                                return false;
-                            }
+                let ft = e.file_type();
+                if ft.is_symlink() {
+                    // Проверяем куда ведёт symlink
+                    if let Ok(target) = fs::read_link(e.path()) {
+                        let target_str = target.to_string_lossy();
+                        if target_str.starts_with("/proc/") 
+                            || target_str.starts_with("/sys/")
+                            || target_str.starts_with("/dev/")
+                        {
+                            return false;
                         }
                     }
                 }

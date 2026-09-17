@@ -252,6 +252,28 @@ impl ComponentType {
             Self::SystemSettings => RiskLevel::Critical,
         }
     }
+
+    /// Получить путь по умолчанию для компонента
+    pub fn get_default_path(&self) -> Option<&'static str> {
+        match self {
+            Self::Desktop => Some("Desktop"),
+            Self::Documents => Some("Documents"),
+            Self::Downloads => Some("Downloads"),
+            Self::Pictures => Some("Pictures"),
+            Self::Videos => Some("Videos"),
+            Self::Music => Some("Music"),
+            Self::Templates => Some("Templates"),
+            Self::AppConfigs => Some(".config"),
+            Self::AppData => Some(".local/share"),
+            Self::LocalBin => Some(".local/bin"),
+            Self::LocalApps => Some(".local/share/applications"),
+            Self::Themes => Some(".themes"),
+            Self::Icons => Some(".icons"),
+            Self::Fonts => Some(".fonts"),
+            Self::SshKeys => Some(".ssh"),
+            _ => None,
+        }
+    }
 }
 
 /// Уровень риска операции
