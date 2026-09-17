@@ -370,7 +370,7 @@ impl DatabaseManager {
             })
         })?;
 
-        Ok(row)
+        Ok(Some(row))
     }
 
     /// Получение истории миграций

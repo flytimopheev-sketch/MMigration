@@ -178,13 +178,13 @@ impl ProfileScanner {
             username: self.username.clone(),
             uid: self.uid,
             gid: self.gid,
-            files,
             total_files: files.len(),
             total_size,
             files_by_component,
             size_by_component,
             excluded_paths,
             errors,
+            files,
         })
     }
 

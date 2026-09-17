@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
 use anyhow::{Context, Result, bail, ensure};
 use crate::config::ComponentType;
-use crate::security::{encrypt_data, decrypt_data};
+use crate::security::{encrypt_file, decrypt_file};
 
 /// Версия формата архива
 const ARCHIVE_FORMAT_VERSION: u32 = 1;
@@ -172,8 +172,8 @@ impl ArchiveManager {
             created_at: now,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             os_info,
-            components: ctx.components,
-            files: ctx.files,
+            components: ctx.components.clone(),
+            files: ctx.files.clone(),
             total_size,
             manifest_hash: None,
         };
@@ -204,15 +204,7 @@ impl ArchiveManager {
         
         // Шифрование архива
         log::info!("Шифрование архива...");
-        let encrypted_data = encrypt_data(&temp_archive_path, &ctx.passphrase)?;
-        
-        // Запись зашифрованного архива
-        let output_file = File::create(&ctx.output_path)
-            .with_context(|| format!("Не удалось создать файл {}", ctx.output_path.display()))?;
-        let mut writer = BufWriter::new(output_file);
-        writer.write_all(&encrypted_data)
-            .context("Ошибка записи зашифрованных данных")?;
-        writer.flush()?;
+        encrypt_file(&temp_archive_path, &ctx.output_path, &ctx.passphrase)?;
         
         log::info!("Архив создан: {}", ctx.output_path.display());
         log::info!("Размер архива: {} байт", fs::metadata(&ctx.output_path)?.len());
@@ -241,24 +233,20 @@ impl ArchiveManager {
         
         // Чтение и расшифровка архива
         log::info!("Чтение и расшифровка архива...");
-        let decrypted_data = decrypt_data(&ctx.archive_path, &ctx.passphrase)?;
         
         // Временный каталог для расшифрованных данных
         let temp_dir = tempfile::tempdir()
             .context("Не удалось создать временный каталог")?;
         let temp_archive_path = temp_dir.path().join("decrypted.tar.zst");
         
-        // Запись расшифрованных данных
-        let mut temp_file = File::create(&temp_archive_path)?;
-        temp_file.write_all(&decrypted_data)?;
-        drop(temp_file);
+        decrypt_file(&ctx.archive_path, &temp_archive_path, &ctx.passphrase)?;
         
         // Извлечение манифеста и данных
         log::info!("Извлечение данных из архива...");
         let manifest = Self::extract_archive(
             &temp_archive_path,
             &ctx.target_path,
-            ctx.components.as_ref(),
+            ctx.components.as_ref().map(|v| &**v),
             ctx.overwrite,
         )?;
         
@@ -281,13 +269,12 @@ impl ArchiveManager {
     
     /// Получить информацию об архиве без расшифровки
     pub fn inspect_archive(archive_path: &Path, passphrase: &str) -> Result<ArchiveInfo> {
-        // Чтение и расшифровка только манифеста
-        let decrypted_data = decrypt_data(archive_path, passphrase)?;
-        
-        // Временный файл для анализа
+        // Временный файл для расшифрованного архива
         let temp_dir = tempfile::tempdir()?;
         let temp_path = temp_dir.path().join("inspect.tar.zst");
-        File::create(&temp_path)?.write_all(&decrypted_data)?;
+        
+        // Расшифровка архива во временный файл
+        decrypt_file(archive_path, &temp_path, passphrase)?;
         
         // Извлечение манифеста
         let manifest = Self::extract_manifest_only(&temp_path)?;
@@ -406,7 +393,8 @@ impl ArchiveManager {
         
         // Извлечение остальных файлов
         let mut tar_archive = tar::Archive::new(Decoder::new(File::open(archive_path)?)?);
-        for mut entry in tar_archive.entries()? {
+        for entry_result in tar_archive.entries()? {
+            let mut entry = entry_result?;
             let entry_path = entry.path()?.to_string_lossy().to_string();
             
             if entry_path == "manifest.json" {
@@ -440,12 +428,12 @@ impl ArchiveManager {
             entry.unpack(&full_target_path)?;
             
             // Восстановление прав доступа
-            if let Ok(metadata) = entry.header().mode() {
+            if let Ok(mode) = entry.header().mode() {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(&full_target_path, 
-                                       fs::Permissions::from_mode(metadata))?;
+                                       fs::Permissions::from_mode(mode))?;
                 }
             }
         }
@@ -461,7 +449,8 @@ impl ArchiveManager {
         let decoder = Decoder::new(file)?;
         let mut tar_archive = tar::Archive::new(decoder);
         
-        for mut entry in tar_archive.entries()? {
+        for entry_result in tar_archive.entries()? {
+            let mut entry = entry_result?;
             let path = entry.path()?.to_string_lossy().to_string();
             if path == "manifest.json" {
                 let mut content = String::new();
