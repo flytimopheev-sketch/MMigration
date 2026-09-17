@@ -3,8 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::io::{Read, Write, BufReader, BufWriter};
 use sha2::{Sha256, Digest};
-use age::{Encryptor, Decryptor, Identity};
-use age::secrecy::Secret;
+use age::{Encryptor, Decryptor, Identity, secrecy::Secret};
 use serde::{Deserialize, Serialize};
 use crate::error::{MigrationError, Result};
 
@@ -186,13 +185,14 @@ pub fn decrypt_file(
     let decryptor = Decryptor::new(BufReader::new(input_file))
         .map_err(|e| MigrationError::Encryption(e.to_string()))?;
     
-    // Создаём identity из passphrase используя публичный API
-    let identities: Vec<Box<dyn Identity>> = vec![
-        Box::new(age::Identity::from_passphrase(password)
-            .map_err(|e| MigrationError::Encryption(format!("Ошибка создания identity: {}", e)))?)
-    ];
+    // Создаём identity из passphrase используя scrypt
+    let passphrase_secret = Secret::new(password.into_bytes());
+    let scrypt_identity = age::scrypt::Identity::new(passphrase_secret)
+        .map_err(|e| MigrationError::Encryption(format!("Ошибка создания scrypt identity: {}", e)))?;
     
-    let mut reader = decryptor.decrypt(&identities.iter().map(|i| i.as_ref()).collect::<Vec<_>>())
+    let identities: Vec<&dyn Identity> = vec![&scrypt_identity];
+    
+    let mut reader = decryptor.decrypt(&identities)
         .map_err(|e| MigrationError::Encryption(e.to_string()))?
         .ok_or_else(|| MigrationError::Encryption("Неверный пароль".to_string()))?;
     

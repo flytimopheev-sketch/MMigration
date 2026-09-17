@@ -368,7 +368,7 @@ impl DatabaseManager {
                 error_message: row.get("error_message")?,
                 duration_secs: row.get("duration_secs")?,
             })
-        }).ok().and_then(|r| r.ok())?;
+        })?;
 
         Ok(row)
     }
@@ -380,15 +380,29 @@ impl DatabaseManager {
         )?;
 
         let rows = stmt.query_map(params![limit, offset], |row| {
+            let started_at_str: String = row.get("started_at")?;
+            let started_at = DateTime::parse_from_rfc3339(&started_at_str)
+                .map(|d| d.with_timezone(&Utc))
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+
+            let finished_at = row.get::<_, Option<String>>("finished_at")?
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|d| d.with_timezone(&Utc));
+
+            let operation_type_str: String = row.get("operation_type")?;
+            let operation_type = serde_json::from_str(&operation_type_str)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+
+            let status_str: String = row.get("status")?;
+            let status = serde_json::from_str(&status_str)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+
             Ok(MigrationRecord {
                 id: row.get("id")?,
-                started_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("started_at")?)
-                    .map(|d| d.with_timezone(&Utc))?,
-                finished_at: row.get::<_, Option<String>>("finished_at")?
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|d| d.with_timezone(&Utc)),
-                operation_type: serde_json::from_str(&row.get::<_, String>("operation_type")?)?,
-                status: serde_json::from_str(&row.get::<_, String>("status")?)?,
+                started_at,
+                finished_at,
+                operation_type,
+                status,
                 source: row.get("source")?,
                 target: row.get("target")?,
                 username: row.get("username")?,
@@ -425,16 +439,29 @@ impl DatabaseManager {
         )?;
 
         let rows = stmt.query_map(params![start.to_rfc3339(), end.to_rfc3339()], |row| {
-            // Аналогично get_migrations
+            let started_at_str: String = row.get("started_at")?;
+            let started_at = DateTime::parse_from_rfc3339(&started_at_str)
+                .map(|d| d.with_timezone(&Utc))
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+
+            let finished_at = row.get::<_, Option<String>>("finished_at")?
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|d| d.with_timezone(&Utc));
+
+            let operation_type_str: String = row.get("operation_type")?;
+            let operation_type = serde_json::from_str(&operation_type_str)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+
+            let status_str: String = row.get("status")?;
+            let status = serde_json::from_str(&status_str)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+
             Ok(MigrationRecord {
                 id: row.get("id")?,
-                started_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("started_at")?)
-                    .map(|d| d.with_timezone(&Utc))?,
-                finished_at: row.get::<_, Option<String>>("finished_at")?
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|d| d.with_timezone(&Utc)),
-                operation_type: serde_json::from_str(&row.get::<_, String>("operation_type")?)?,
-                status: serde_json::from_str(&row.get::<_, String>("status")?)?,
+                started_at,
+                finished_at,
+                operation_type,
+                status,
                 source: row.get("source")?,
                 target: row.get("target")?,
                 username: row.get("username")?,
@@ -561,10 +588,14 @@ impl DatabaseManager {
             "SELECT value FROM settings WHERE key = ?1"
         )?;
 
-        let value = stmt.query_row(params![key], |row| {
+        let result = stmt.query_row(params![key], |row| {
             row.get::<_, String>("value")
-        }).ok().and_then(|r| r.ok())?;
+        });
 
-        Ok(value)
+        match result {
+            Ok(val) => Ok(Some(val)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(MigrationError::Database(e.into())),
+        }
     }
 }

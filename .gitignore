@@ -1,34 +1,4 @@
 ```
-# Compiled and build artifacts
-*.o
-*.obj
-*.a
-*.lib
-*.so
-*.dll
-*.exe
-*.out
-
-# Dependencies
 target/
-Cargo.lock
-
-# Logs and temp files
-*.log
-*.tmp
-*.swp
-
-# Editors
-.vscode/
-.idea/
-
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# Environment
-.env
-.env.local
-*.env.*
+**/*.rs.bk
 ```
