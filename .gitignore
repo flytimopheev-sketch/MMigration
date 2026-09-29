@@ -1,6 +1,7 @@
-```
 # Rust/Cargo specific
 target/
-Cargo.lock
+**/*.rsbk
 **/*.rs.bk
-```
+
+# Logs
+*.log

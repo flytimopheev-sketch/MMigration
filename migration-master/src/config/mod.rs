@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use std::path::Path;
+
 /// Версия формата архива
 pub const ARCHIVE_FORMAT_VERSION: u32 = 1;
 /// Расширение файлов архивов
@@ -43,16 +45,13 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let home = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp"));
-        let data_dir = PathBuf::from("/var/local")
-            .join("migration-master");
+        let data_dir = get_data_dir();
+        let temp_dir = std::env::temp_dir().join("migration-master");
 
         Self {
             database_path: data_dir.join("migrations.db"),
             log_path: data_dir.join("migration.log"),
-            temp_dir: PathBuf::from("/tmp/migration-master"),
+            temp_dir,
             max_log_size_mb: 10,
             ssh_timeout_secs: 30,
             ssh_retry_count: 3,
@@ -252,6 +251,141 @@ impl ComponentType {
             Self::SystemSettings => RiskLevel::Critical,
         }
     }
+
+    /// Ключ компонента для CLI и сериализации.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Documents => "documents",
+            Self::Downloads => "downloads",
+            Self::Pictures => "pictures",
+            Self::Videos => "videos",
+            Self::Music => "music",
+            Self::Templates => "templates",
+            Self::CustomDirs => "custom_dirs",
+            Self::AppConfigs => "app_configs",
+            Self::AppData => "app_data",
+            Self::LocalBin => "local_bin",
+            Self::LocalApps => "local_apps",
+            Self::Themes => "themes",
+            Self::Icons => "icons",
+            Self::Fonts => "fonts",
+            Self::SshKeys => "ssh_keys",
+            Self::Printers => "printers",
+            Self::Packages => "packages",
+            Self::SystemSettings => "system_settings",
+            Self::CronJobs => "cron_jobs",
+            Self::UserServices => "user_services",
+        }
+    }
+
+    /// Разбор ключа компонента (с поддержкой распространённых синонимов).
+    pub fn from_key(key: &str) -> Option<Self> {
+        let normalized = key.trim().to_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "desktop" => Some(Self::Desktop),
+            "documents" | "docs" => Some(Self::Documents),
+            "downloads" => Some(Self::Downloads),
+            "pictures" | "images" => Some(Self::Pictures),
+            "videos" => Some(Self::Videos),
+            "music" => Some(Self::Music),
+            "templates" => Some(Self::Templates),
+            "custom_dirs" | "custom" => Some(Self::CustomDirs),
+            "app_configs" | "config" | "configs" | ".config" => Some(Self::AppConfigs),
+            "app_data" | "local_data" | "data" => Some(Self::AppData),
+            "local_bin" | "bin" => Some(Self::LocalBin),
+            "local_apps" | "applications" => Some(Self::LocalApps),
+            "themes" => Some(Self::Themes),
+            "icons" => Some(Self::Icons),
+            "fonts" => Some(Self::Fonts),
+            "ssh_keys" | "ssh" => Some(Self::SshKeys),
+            "printers" | "cups" => Some(Self::Printers),
+            "packages" | "rpm" => Some(Self::Packages),
+            "system_settings" | "system" => Some(Self::SystemSettings),
+            "cron_jobs" | "cron" => Some(Self::CronJobs),
+            "user_services" | "services" => Some(Self::UserServices),
+            _ => None,
+        }
+    }
+
+    /// Разбор списка компонентов из строки (`documents,ssh_keys,printers`).
+    pub fn parse_list(list: &str) -> Result<Vec<Self>, String> {
+        let mut result = Vec::new();
+        for raw in list.split(',') {
+            let item = raw.trim();
+            if item.is_empty() {
+                continue;
+            }
+            match Self::from_key(item) {
+                Some(component) => result.push(component),
+                None => return Err(format!("неизвестный компонент: {}", item)),
+            }
+        }
+        Ok(result)
+    }
+
+    /// Пути компонента относительно домашнего каталога пользователя.
+    pub fn default_paths(&self, home: &std::path::Path) -> Vec<std::path::PathBuf> {
+        match self {
+            Self::Desktop => vec![home.join("Desktop"), home.join("Рабочий стол")],
+            Self::Documents => vec![home.join("Documents"), home.join("Документы")],
+            Self::Downloads => vec![home.join("Downloads"), home.join("Загрузки")],
+            Self::Pictures => vec![home.join("Pictures"), home.join("Изображения")],
+            Self::Videos => vec![home.join("Videos"), home.join("Видео")],
+            Self::Music => vec![home.join("Music"), home.join("Музыка")],
+            Self::Templates => vec![home.join("Templates"), home.join("Шаблоны")],
+            Self::CustomDirs => Vec::new(),
+            Self::AppConfigs => vec![home.join(".config")],
+            Self::AppData => vec![home.join(".local").join("share")],
+            Self::LocalBin => vec![home.join(".local").join("bin")],
+            Self::LocalApps => vec![home.join(".local").join("share").join("applications")],
+            Self::Themes => vec![home.join(".themes")],
+            Self::Icons => vec![home.join(".icons")],
+            Self::Fonts => vec![home.join(".fonts"), home.join(".local/share/fonts")],
+            Self::SshKeys => vec![home.join(".ssh")],
+            Self::Printers => vec![home.join(".cups")],
+            Self::Packages => vec![home.join(".local/share/migration-master/package-list.json")],
+            Self::SystemSettings => vec![home.join(".config/migration-master/system-settings.json")],
+            Self::CronJobs => vec![home.join(".config/migration-master/crontab.txt")],
+            Self::UserServices => vec![home.join(".config/systemd/user")],
+        }
+    }
+
+    /// Основной префикс пути в архиве (для фильтрации при восстановлении).
+    pub fn archive_prefix(&self) -> Option<&'static str> {
+        match self {
+            Self::Desktop => Some("Desktop"),
+            Self::Documents => Some("Documents"),
+            Self::Downloads => Some("Downloads"),
+            Self::Pictures => Some("Pictures"),
+            Self::Videos => Some("Videos"),
+            Self::Music => Some("Music"),
+            Self::Templates => Some("Templates"),
+            Self::AppConfigs => Some(".config"),
+            Self::AppData => Some(".local/share"),
+            Self::LocalBin => Some(".local/bin"),
+            Self::LocalApps => Some(".local/share/applications"),
+            Self::Themes => Some(".themes"),
+            Self::Icons => Some(".icons"),
+            Self::Fonts => Some(".fonts"),
+            Self::SshKeys => Some(".ssh"),
+            Self::Printers => Some(".cups"),
+            _ => None,
+        }
+    }
+
+    /// Требует ли компонент привилегированных операций (root).
+    pub fn requires_root(&self) -> bool {
+        matches!(self, Self::Packages | Self::Printers | Self::SystemSettings)
+    }
+
+    /// Опасный ли компонент (требует отдельного подтверждения пользователя).
+    pub fn is_sensitive(&self) -> bool {
+        matches!(
+            self,
+            Self::SshKeys | Self::Printers | Self::Packages | Self::SystemSettings
+        )
+    }
 }
 
 /// Уровень риска операции
@@ -328,8 +462,18 @@ pub fn get_data_dir() -> PathBuf {
 }
 
 /// Загрузка конфигурации из файла
-pub fn load_config() -> Result<AppConfig, Box<dyn std::error::Error>> {
-    let config_path = get_config_dir().join("config.toml");
+pub fn load_config() -> crate::error::Result<AppConfig> {
+    load_config_from(config_file_path())
+}
+
+/// Путь к файлу конфигурации
+pub fn config_file_path() -> PathBuf {
+    get_config_dir().join("config.toml")
+}
+
+/// Загрузка конфигурации из указанного файла
+pub fn load_config_from(path: impl AsRef<Path>) -> crate::error::Result<AppConfig> {
+    let config_path = path.as_ref().to_path_buf();
     
     if config_path.exists() {
         let content = std::fs::read_to_string(config_path)?;
@@ -341,13 +485,119 @@ pub fn load_config() -> Result<AppConfig, Box<dyn std::error::Error>> {
 }
 
 /// Сохранение конфигурации в файл
-pub fn save_config(config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
-    let config_dir = get_config_dir();
+pub fn save_config(config: &AppConfig) -> crate::error::Result<()> {
+    save_config_to(config_file_path(), config)
+}
+
+/// Сохранение конфигурации в указанный файл
+pub fn save_config_to(path: impl AsRef<Path>, config: &AppConfig) -> crate::error::Result<()> {
+    let config_path = path.as_ref().to_path_buf();
+    let config_dir = config_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(get_config_dir);
     std::fs::create_dir_all(&config_dir)?;
     
-    let config_path = config_dir.join("config.toml");
     let content = toml::to_string_pretty(config)?;
     std::fs::write(config_path, content)?;
     
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config_dirs_are_valid() {
+        let config = AppConfig::default();
+        assert!(config
+            .database_path
+            .to_string_lossy()
+            .contains("migration-master"));
+        assert_eq!(config.language, "ru");
+        assert!(config.ssh_timeout_secs > 0);
+    }
+
+    #[test]
+    fn test_component_keys_round_trip() {
+        for component in ComponentType::all_components() {
+            let key = component.key();
+            assert_eq!(
+                ComponentType::from_key(key),
+                Some(component),
+                "компонент {} не восстанавливается по ключу",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_component_list() {
+        let parsed = ComponentType::parse_list("documents, ssh_keys ,printers").expect("parse");
+        assert_eq!(
+            parsed,
+            vec![
+                ComponentType::Documents,
+                ComponentType::SshKeys,
+                ComponentType::Printers
+            ]
+        );
+        assert!(ComponentType::parse_list("documents,unknown").is_err());
+    }
+
+    #[test]
+    fn test_component_aliases() {
+        assert_eq!(ComponentType::from_key("ssh"), Some(ComponentType::SshKeys));
+        assert_eq!(
+            ComponentType::from_key("cups"),
+            Some(ComponentType::Printers)
+        );
+        assert_eq!(ComponentType::from_key("rpm"), Some(ComponentType::Packages));
+    }
+
+    #[test]
+    fn test_default_paths_are_inside_home() {
+        let home = PathBuf::from("/home/user");
+        for component in ComponentType::all_components() {
+            for path in component.default_paths(&home) {
+                assert!(
+                    path.starts_with(&home),
+                    "{:?} вне домашнего каталога: {}",
+                    component,
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_risk_levels() {
+        assert_eq!(ComponentType::Documents.risk_level(), RiskLevel::Low);
+        assert_eq!(ComponentType::SshKeys.risk_level(), RiskLevel::High);
+        assert_eq!(
+            ComponentType::SystemSettings.risk_level(),
+            RiskLevel::Critical
+        );
+    }
+
+    #[test]
+    fn test_config_save_and_load_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let mut config = AppConfig::default();
+        config.history_days = 42;
+
+        save_config_to(&path, &config).expect("save");
+        let loaded = load_config_from(&path).expect("load");
+        assert_eq!(loaded.history_days, 42);
+    }
+
+    #[test]
+    fn test_load_missing_config_returns_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let loaded = load_config_from(dir.path().join("nope.toml")).expect("load");
+        assert_eq!(loaded.language, "ru");
+    }
+}
+

@@ -1,56 +1,27 @@
-//! Модуль работы с архивами миграции (.rmm формат)
-//! 
-//! Формат архива:
-//! - manifest.json (метаданные)
-//! - зашифрованные данные (age)
-//! - SHA-256 контрольная сумма
+//! Работа с архивами миграции (формат `.rmm`).
+//!
+//! Структура архива:
+//! - `manifest.json` — метаданные (первая запись tar);
+//! - файлы профиля с относительными путями;
+//! - сжатие zstd, шифрование age (если задан пароль).
+//!
+//! Все пути проверяются на path traversal, запись за пределы целевого
+//! каталога запрещена, файлы записываются атомарно.
 
-use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
-use anyhow::{Context, Result, bail, ensure};
+
 use crate::config::ComponentType;
-use crate::security::{encrypt_data, decrypt_data};
+use crate::conflict_resolver::{ConflictInfo, ConflictKind, ConflictResolver, ConflictStrategy};
+use crate::error::{MigrationError, Result};
+use crate::file_transfer::{self, ProgressObserver, TransferItem};
+use crate::platform;
+use crate::security;
 
-/// Версия формата архива
-const ARCHIVE_FORMAT_VERSION: u32 = 1;
-/// Расширение файлов архива
-const ARCHIVE_EXTENSION: &str = "rmm";
-
-/// Метаданные архива миграции
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArchiveManifest {
-    /// Версия формата архива
-    pub format_version: u32,
-    /// Имя хоста источника
-    pub source_hostname: String,
-    /// Имя пользователя источника
-    pub source_user: String,
-    /// UID пользователя источника
-    pub source_uid: u32,
-    /// GID пользователя источника
-    pub source_gid: u32,
-    /// Дата создания архива (Unix timestamp)
-    pub created_at: u64,
-    /// Версия приложения, создавшего архив
-    pub app_version: String,
-    /// Сведения об ОС источника
-    pub os_info: OsInfo,
-    /// Список переносимых компонентов
-    pub components: Vec<ComponentType>,
-    /// Список файлов в архиве
-    pub files: Vec<FileEntry>,
-    /// Общий размер данных до сжатия
-    pub total_size: u64,
-    /// SHA-256 хеш манифеста (для проверки целостности)
-    pub manifest_hash: Option<String>,
-}
-
-/// Сведения об операционной системе
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Сведения об операционной системе источника.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct OsInfo {
     /// Название ОС
     pub name: String,
@@ -60,569 +31,1139 @@ pub struct OsInfo {
     pub architecture: String,
 }
 
-/// Информация о файле в архиве
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl OsInfo {
+    /// Собрать информацию о текущей системе.
+    pub fn from_system() -> Self {
+        let release = platform::os_release();
+        Self {
+            name: release.pretty_name,
+            version: release.version,
+            architecture: platform::architecture(),
+        }
+    }
+}
+
+/// Запись о файле внутри архива.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileEntry {
-    /// Относительный путь файла
+    /// Относительный путь внутри архива
     pub relative_path: String,
-    /// Полный путь источника
-    pub source_path: String,
-    /// Размер файла в байтах
+    /// Размер в байтах
     pub size: u64,
-    /// SHA-256 хеш файла
+    /// SHA-256 хеш содержимого
     pub hash: String,
     /// Права доступа (Unix mode)
     pub mode: u32,
-    /// UID владельца
+    /// UID владельца на источнике
     pub uid: u32,
-    /// GID владельца
+    /// GID владельца на источнике
     pub gid: u32,
-    /// Является ли файл символьной ссылкой
+    /// Символическая ссылка
     pub is_symlink: bool,
-    /// Цель символической ссылки (если применимо)
+    /// Цель символической ссылки
     pub symlink_target: Option<String>,
+    /// Компонент миграции
+    pub component: Option<ComponentType>,
 }
 
-/// Контекст создания архива
-#[derive(Debug, Clone)]
-pub struct CreateArchiveContext {
-    /// Путь к выходному файлу архива
-    pub output_path: PathBuf,
-    /// Пароль для шифрования
-    pub passphrase: String,
-    /// Выбранные компоненты для миграции
+impl FileEntry {
+    /// Элемент передачи для использования в `file_transfer`.
+    pub fn to_transfer_item(&self, base: &Path) -> TransferItem {
+        TransferItem {
+            source: base.join(&self.relative_path),
+            relative: PathBuf::from(&self.relative_path),
+            size: self.size,
+            is_symlink: self.is_symlink,
+            symlink_target: self.symlink_target.as_ref().map(PathBuf::from),
+            mode: if self.mode == 0 { None } else { Some(self.mode) },
+        }
+    }
+
+    /// Относится ли файл к указанному компоненту.
+    pub fn matches_component(&self, component: &ComponentType) -> bool {
+        if self.component == Some(*component) {
+            return true;
+        }
+        match component.archive_prefix() {
+            Some(prefix) => self.relative_path.starts_with(prefix),
+            None => false,
+        }
+    }
+}
+
+/// Манифест архива (первая запись внутри tar).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ArchiveManifest {
+    /// Версия формата архива
+    pub format_version: u32,
+    /// Дата создания (RFC 3339)
+    pub created_at: String,
+    /// Имя хоста источника
+    pub source_hostname: String,
+    /// Пользователь источника
+    pub source_user: String,
+    /// UID пользователя источника
+    pub source_uid: u32,
+    /// GID пользователя источника
+    pub source_gid: u32,
+    /// Версия приложения
+    pub app_version: String,
+    /// Сведения об ОС источника
+    pub os_info: OsInfo,
+    /// Компоненты, включённые в архив
     pub components: Vec<ComponentType>,
-    /// Список файлов для включения
+    /// Список файлов
     pub files: Vec<FileEntry>,
-    /// Путь к домашнему каталогу источника
-    pub source_home: PathBuf,
-    /// Dry-run режим (только анализ, без создания)
-    pub dry_run: bool,
+    /// Общий размер данных
+    pub total_size: u64,
+    /// Количество файлов
+    pub total_files: usize,
+    /// Зашифрован ли архив
+    pub encrypted: bool,
+    /// Использованное сжатие
+    pub compression: String,
+    /// Необязательная подпись архива
+    pub signature: Option<String>,
+    /// SHA-256 хеш манифеста (без этого поля)
+    pub manifest_hash: Option<String>,
 }
 
-/// Контекст восстановления из архива
+impl ArchiveManifest {
+    /// Вычислить хеш манифеста (поле `manifest_hash` не учитывается).
+    pub fn compute_hash(&self) -> Result<String> {
+        let mut copy = self.clone();
+        copy.manifest_hash = None;
+        let json = serde_json::to_vec(&copy)?;
+        Ok(security::compute_sha256_from_data(&json))
+    }
+
+    /// Проверить целостность манифеста.
+    pub fn verify_hash(&self) -> Result<bool> {
+        let expected = match &self.manifest_hash {
+            Some(hash) => hash,
+            None => return Ok(false),
+        };
+        Ok(self.compute_hash()?.eq_ignore_ascii_case(expected))
+    }
+
+    /// Файлы, относящиеся к указанным компонентам.
+    pub fn files_for_components(&self, components: &[ComponentType]) -> Vec<&FileEntry> {
+        self.files
+            .iter()
+            .filter(|file| {
+                components
+                    .iter()
+                    .any(|component| file.matches_component(component))
+            })
+            .collect()
+    }
+}
+
+/// Опции создания архива.
 #[derive(Debug, Clone)]
-pub struct RestoreArchiveContext {
-    /// Путь к файлу архива
-    pub archive_path: PathBuf,
-    /// Пароль для расшифровки
-    pub passphrase: String,
-    /// Целевой путь для восстановления
-    pub target_path: PathBuf,
-    /// Компоненты для восстановления (None = все)
-    pub components: Option<Vec<ComponentType>>,
-    /// Dry-run режим
+pub struct CreateArchiveOptions {
+    /// Каталог для выходного файла
+    pub output: PathBuf,
+    /// Домашний каталог источника
+    pub source_home: PathBuf,
+    /// Элементы для упаковки
+    pub items: Vec<TransferItem>,
+    /// Компоненты, включённые в архив
+    pub components: Vec<ComponentType>,
+    /// Пароль шифрования (None — без шифрования)
+    pub passphrase: Option<String>,
+    /// Уровень сжатия zstd (0-22)
+    pub compression_level: i32,
+    /// Режим без создания файла
     pub dry_run: bool,
-    /// Перезаписывать существующие файлы
-    pub overwrite: bool,
 }
 
-/// Результат анализа архива
+/// Результат создания архива.
+#[derive(Debug, Clone)]
+pub struct CreateArchiveResult {
+    /// Путь к архиву
+    pub path: PathBuf,
+    /// Манифест
+    pub manifest: ArchiveManifest,
+    /// Размер архива в байтах (0 в режиме dry-run)
+    pub archive_size: u64,
+    /// Зашифрован ли архив
+    pub encrypted: bool,
+    /// Длительность операции в миллисекундах
+    pub duration_ms: u128,
+}
+
+/// Информация об архиве без восстановления.
 #[derive(Debug, Clone)]
 pub struct ArchiveInfo {
-    /// Манифест архива
+    /// Манифест
     pub manifest: ArchiveManifest,
-    /// Путь к файлу архива
+    /// Путь к архиву
     pub archive_path: PathBuf,
     /// Размер файла архива
     pub archive_size: u64,
-    /// Статус проверки целостности
+    /// Результат проверки целостности манифеста
     pub integrity_verified: bool,
 }
 
-/// Менеджер архивов миграции
+
+/// Опции восстановления.
+#[derive(Debug, Clone)]
+pub struct RestoreOptions {
+    /// Путь к архиву
+    pub archive: PathBuf,
+    /// Пароль (для зашифрованных архивов)
+    pub passphrase: Option<String>,
+    /// Каталог восстановления
+    pub target_root: PathBuf,
+    /// Компоненты (None — все)
+    pub components: Option<Vec<ComponentType>>,
+    /// Стратегия разрешения конфликтов
+    pub strategy: ConflictStrategy,
+    /// Проверять хеши после восстановления
+    pub verify_hash: bool,
+    /// Режим без изменений
+    pub dry_run: bool,
+}
+
+impl Default for RestoreOptions {
+    fn default() -> Self {
+        Self {
+            archive: PathBuf::new(),
+            passphrase: None,
+            target_root: PathBuf::new(),
+            components: None,
+            strategy: ConflictStrategy::Ask,
+            verify_hash: false,
+            dry_run: false,
+        }
+    }
+}
+
+/// Результат восстановления.
+#[derive(Debug, Clone, Default)]
+pub struct RestoreResult {
+    /// Восстановлено файлов
+    pub restored_files: u64,
+    /// Восстановлено байт
+    pub restored_bytes: u64,
+    /// Пропущено файлов
+    pub skipped_files: u64,
+    /// Проверено хешей
+    pub verified_files: u64,
+    /// Обнаруженные конфликты
+    pub conflicts: Vec<ConflictInfo>,
+    /// Ошибки
+    pub errors: Vec<String>,
+}
+
+impl RestoreResult {
+    /// Завершилось ли восстановление без ошибок.
+    pub fn is_success(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
+/// Отчёт проверки архива.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct VerifyReport {
+    /// Манифест целостен
+    pub manifest_ok: bool,
+    /// Проверено файлов
+    pub checked_files: u64,
+    /// Файлы с несовпадающими хешами
+    pub mismatched: Vec<String>,
+    /// Отсутствующие в архиве файлы
+    pub missing: Vec<String>,
+}
+
+impl VerifyReport {
+    /// Полностью ли корректен архив.
+    pub fn is_valid(&self) -> bool {
+        self.manifest_ok && self.mismatched.is_empty() && self.missing.is_empty()
+    }
+}
+
+
+/// Определить компонент по относительному пути (по префиксу в архиве).
+fn component_for_path(relative: &str) -> Option<ComponentType> {
+    let mut best: Option<(usize, ComponentType)> = None;
+
+    for component in ComponentType::all_components() {
+        if let Some(prefix) = component.archive_prefix() {
+            if relative.starts_with(prefix) {
+                let is_better = best.map(|(len, _)| prefix.len() > len).unwrap_or(true);
+                if is_better {
+                    best = Some((prefix.len(), component));
+                }
+            }
+        }
+    }
+
+    best.map(|(_, component)| component)
+}
+
+/// Собрать манифест для набора элементов (с вычислением хешей).
+fn build_manifest(
+    options: &CreateArchiveOptions,
+    observer: &dyn ProgressObserver,
+) -> Result<ArchiveManifest> {
+    let total_bytes: u64 = options.items.iter().map(|item| item.size).sum();
+    let mut files = Vec::with_capacity(options.items.len());
+    let mut done = 0u64;
+
+    for item in &options.items {
+        let relative = item.relative.to_string_lossy().to_string();
+        let component = component_for_path(&relative);
+
+        if item.is_symlink {
+            let target = item
+                .symlink_target
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            files.push(FileEntry {
+                relative_path: relative,
+                size: item.size,
+                hash: security::compute_sha256_from_data(target.as_bytes()),
+                mode: item.mode.unwrap_or(0o777),
+                uid: platform::current_uid(),
+                gid: platform::current_gid(),
+                is_symlink: true,
+                symlink_target: Some(target),
+                component,
+            });
+        } else {
+            let hash = security::compute_sha256(&item.source)?;
+            let (uid, gid) = platform::owner_uid_gid(&item.source);
+
+            files.push(FileEntry {
+                relative_path: relative,
+                size: hash.size,
+                hash: hash.sha256,
+                mode: item
+                    .mode
+                    .or_else(|| platform::file_mode(&item.source))
+                    .unwrap_or(0o644),
+                uid: uid.unwrap_or_else(platform::current_uid),
+                gid: gid.unwrap_or_else(platform::current_gid),
+                is_symlink: false,
+                symlink_target: None,
+                component,
+            });
+        }
+
+        done += item.size;
+        observer.on_progress(done, total_bytes, &item.source);
+        observer.on_file_done(&item.source, item.size);
+    }
+
+    let total_size = files.iter().map(|file| file.size).sum();
+    let mut manifest = ArchiveManifest {
+        format_version: crate::config::ARCHIVE_FORMAT_VERSION,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        source_hostname: platform::hostname(),
+        source_user: platform::username(),
+        source_uid: platform::current_uid(),
+        source_gid: platform::current_gid(),
+        app_version: crate::VERSION.to_string(),
+        os_info: OsInfo::from_system(),
+        components: options.components.clone(),
+        files,
+        total_size,
+        total_files: 0,
+        encrypted: options.passphrase.is_some(),
+        compression: format!("zstd-{}", options.compression_level),
+        signature: None,
+        manifest_hash: None,
+    };
+
+    manifest.total_files = manifest.files.len();
+    let hash = manifest.compute_hash()?;
+    manifest.manifest_hash = Some(hash);
+
+    Ok(manifest)
+}
+
+
+/// Менеджер архивов миграции.
 pub struct ArchiveManager;
 
 impl ArchiveManager {
-    /// Создать новый архив миграции
-    pub fn create_archive(ctx: CreateArchiveContext) -> Result<PathBuf> {
-        // Проверка пути на path traversal
-        Self::validate_archive_path(&ctx.output_path)?;
-        
-        if ctx.dry_run {
-            log::info!("Dry-run: создание архива отменено");
-            log::info!("Путь: {}", ctx.output_path.display());
-            log::info!("Компонентов: {}", ctx.components.len());
-            log::info!("Файлов: {}", ctx.files.len());
-            let total_size: u64 = ctx.files.iter().map(|f| f.size).sum();
-            log::info!("Общий размер: {} байт", total_size);
-            return Ok(ctx.output_path);
+    /// Создать архив из элементов передачи.
+    pub fn create(
+        options: &CreateArchiveOptions,
+        observer: &dyn ProgressObserver,
+    ) -> Result<CreateArchiveResult> {
+        let started = std::time::Instant::now();
+
+        if options.items.is_empty() {
+            return Err(MigrationError::InvalidInput(
+                "нечего упаковывать: список файлов пуст".to_string(),
+            ));
         }
-        
-        // Создание манифеста
-        let hostname = hostname::get()
-            .context("Не удалось получить имя хоста")?
-            .to_string_lossy()
-            .to_string();
-        
-        let os_info = Self::detect_os_info()?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("Ошибка системного времени")?
-            .as_secs();
-        
-        let total_size: u64 = ctx.files.iter().map(|f| f.size).sum();
-        
-        let mut manifest = ArchiveManifest {
-            format_version: ARCHIVE_FORMAT_VERSION,
-            source_hostname: hostname,
-            source_user: whoami::username(),
-            source_uid: users::get_current_uid(),
-            source_gid: users::get_current_gid(),
-            created_at: now,
-            app_version: env!("CARGO_PKG_VERSION").to_string(),
-            os_info,
-            components: ctx.components,
-            files: ctx.files,
-            total_size,
-            manifest_hash: None,
+
+        let manifest = build_manifest(options, observer)?;
+        let encrypted = manifest.encrypted;
+
+        let mut result = CreateArchiveResult {
+            path: options.output.clone(),
+            manifest,
+            archive_size: 0,
+            encrypted,
+            duration_ms: started.elapsed().as_millis(),
         };
-        
-        // Вычисление хеша манифеста
-        let manifest_json = serde_json::to_string_pretty(&manifest)
-            .context("Ошибка сериализации манифеста")?;
-        let manifest_hash = Self::compute_hash(manifest_json.as_bytes());
-        manifest.manifest_hash = Some(manifest_hash.clone());
-        
-        // Обновлённый JSON манифеста
-        let manifest_json = serde_json::to_string_pretty(&manifest)
-            .context("Ошибка сериализации манифеста с хешем")?;
-        
-        // Создание временного каталога для упаковки
-        let temp_dir = tempfile::tempdir()
-            .context("Не удалось создать временный каталог")?;
-        let temp_archive_path = temp_dir.path().join("archive.tmp");
-        
-        // Упаковка данных в tar+zstd
-        log::info!("Упаковка данных в архив...");
-        Self::create_tar_archive(
-            &temp_archive_path,
-            &manifest_json,
-            &ctx.files,
-            &ctx.source_home,
-        )?;
-        
-        // Шифрование архива
-        log::info!("Шифрование архива...");
-        let encrypted_data = encrypt_data(&temp_archive_path, &ctx.passphrase)?;
-        
-        // Запись зашифрованного архива
-        let output_file = File::create(&ctx.output_path)
-            .with_context(|| format!("Не удалось создать файл {}", ctx.output_path.display()))?;
-        let mut writer = BufWriter::new(output_file);
-        writer.write_all(&encrypted_data)
-            .context("Ошибка записи зашифрованных данных")?;
-        writer.flush()?;
-        
-        log::info!("Архив создан: {}", ctx.output_path.display());
-        log::info!("Размер архива: {} байт", fs::metadata(&ctx.output_path)?.len());
-        
-        Ok(ctx.output_path)
-    }
-    
-    /// Восстановить данные из архива
-    pub fn restore_archive(ctx: RestoreArchiveContext) -> Result<()> {
-        // Проверка существования архива
-        ensure!(
-            ctx.archive_path.exists(),
-            "Архив не найден: {}",
-            ctx.archive_path.display()
-        );
-        
-        // Проверка пути назначения на path traversal
-        Self::validate_restore_path(&ctx.target_path)?;
-        
-        if ctx.dry_run {
-            log::info!("Dry-run: восстановление отменено");
-            log::info!("Архив: {}", ctx.archive_path.display());
-            log::info!("Цель: {}", ctx.target_path.display());
-            return Ok(());
+
+        if options.dry_run {
+            return Ok(result);
         }
-        
-        // Чтение и расшифровка архива
-        log::info!("Чтение и расшифровка архива...");
-        let decrypted_data = decrypt_data(&ctx.archive_path, &ctx.passphrase)?;
-        
-        // Временный каталог для расшифрованных данных
-        let temp_dir = tempfile::tempdir()
-            .context("Не удалось создать временный каталог")?;
-        let temp_archive_path = temp_dir.path().join("decrypted.tar.zst");
-        
-        // Запись расшифрованных данных
-        let mut temp_file = File::create(&temp_archive_path)?;
-        temp_file.write_all(&decrypted_data)?;
-        drop(temp_file);
-        
-        // Извлечение манифеста и данных
-        log::info!("Извлечение данных из архива...");
-        let manifest = Self::extract_archive(
-            &temp_archive_path,
-            &ctx.target_path,
-            ctx.components.as_ref(),
-            ctx.overwrite,
-        )?;
-        
-        // Фильтрация по компонентам если указано
-        let files_to_restore: Vec<&FileEntry> = if let Some(components) = &ctx.components {
-            manifest.files.iter()
-                .filter(|f| components.iter().any(|c| {
-                    // Простая логика: проверяем префикс пути
-                    f.relative_path.starts_with(&Self::component_to_prefix(c))
-                }))
-                .collect()
+
+        if let Some(parent) = options.output.parent() {
+            std::fs::create_dir_all(parent)?;
+            file_transfer::ensure_space(parent, result.manifest.total_size)?;
+        }
+
+        // При шифровании сначала пишем обычный tar.zst во временный файл.
+        let temp = if options.passphrase.is_some() {
+            Some(tempfile::NamedTempFile::new()?)
         } else {
-            manifest.files.iter().collect()
+            None
         };
-        
-        log::info!("Восстановлено файлов: {}", files_to_restore.len());
-        
+
+        let target_path = match &temp {
+            Some(file) => file.path().to_path_buf(),
+            None => options.output.clone(),
+        };
+
+        Self::write_archive(&target_path, options, &result.manifest, observer)?;
+
+        if let (Some(passphrase), Some(temp)) = (&options.passphrase, &temp) {
+            security::encrypt_file(temp.path(), &options.output, passphrase)?;
+        }
+
+        result.archive_size = std::fs::metadata(&options.output)?.len();
+        result.duration_ms = started.elapsed().as_millis();
+        Ok(result)
+    }
+
+    /// Записать несжатый поток: tar + zstd (+ manifest первым элементом).
+    fn write_archive(
+        path: &Path,
+        options: &CreateArchiveOptions,
+        manifest: &ArchiveManifest,
+        observer: &dyn ProgressObserver,
+    ) -> Result<()> {
+        let file = File::create(path)?;
+        let encoder = zstd::stream::write::Encoder::new(file, options.compression_level)
+            .map_err(|e| MigrationError::Unknown(format!("ошибка сжатия: {}", e)))?;
+        let mut builder = tar::Builder::new(encoder);
+
+        let json = serde_json::to_vec_pretty(manifest)?;
+        let mut header = tar::Header::new_gnu();
+        header
+            .set_path("manifest.json")
+            .map_err(|e| MigrationError::Unknown(format!("манифест: {}", e)))?;
+        header.set_size(json.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        builder.append_data(&mut header, "manifest.json", json.as_slice())?;
+
+        let total = manifest.total_size;
+        let mut done = 0u64;
+
+        for file_entry in &manifest.files {
+            let relative = Path::new(&file_entry.relative_path);
+            let source = options.source_home.join(relative);
+            let mut header = tar::Header::new_gnu();
+
+            if file_entry.is_symlink {
+                header.set_entry_type(tar::EntryType::Symlink);
+                header
+                    .set_path(&file_entry.relative_path)
+                    .map_err(|e| MigrationError::Unknown(format!("ссылка: {}", e)))?;
+                header.set_size(0);
+                header.set_mode(file_entry.mode);
+                header.set_uid(file_entry.uid as u64);
+                header.set_gid(file_entry.gid as u64);
+                let target = file_entry.symlink_target.clone().unwrap_or_default();
+                header
+                    .set_link_name(&target)
+                    .map_err(|e| MigrationError::Unknown(format!("цель ссылки: {}", e)))?;
+                header.set_cksum();
+                builder.append(&header, std::io::empty())?;
+            } else {
+                let source_file = File::open(&source)?;
+                let metadata = std::fs::symlink_metadata(&source)?;
+
+                header.set_size(file_entry.size);
+                header.set_mode(file_entry.mode);
+                header.set_uid(file_entry.uid as u64);
+                header.set_gid(file_entry.gid as u64);
+                if let Ok(mtime) = metadata.modified() {
+                    if let Ok(secs) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                        header.set_mtime(secs.as_secs());
+                    }
+                }
+                header.set_cksum();
+                builder.append_data(&mut header, relative, source_file)?;
+            }
+
+            done += file_entry.size;
+            observer.on_progress(done, total, &source);
+        }
+
+        let encoder = builder.into_inner()?;
+        let mut file = encoder.finish()?;
+        file.flush()?;
+
         Ok(())
     }
-    
-    /// Получить информацию об архиве без расшифровки
-    pub fn inspect_archive(archive_path: &Path, passphrase: &str) -> Result<ArchiveInfo> {
-        // Чтение и расшифровка только манифеста
-        let decrypted_data = decrypt_data(archive_path, passphrase)?;
-        
-        // Временный файл для анализа
-        let temp_dir = tempfile::tempdir()?;
-        let temp_path = temp_dir.path().join("inspect.tar.zst");
-        File::create(&temp_path)?.write_all(&decrypted_data)?;
-        
-        // Извлечение манифеста
-        let manifest = Self::extract_manifest_only(&temp_path)?;
-        
-        // Проверка целостности
-        let manifest_json = serde_json::to_string_pretty(&manifest)?;
-        let computed_hash = Self::compute_hash(manifest_json.as_bytes());
-        let integrity_verified = manifest.manifest_hash.as_ref() == Some(&computed_hash);
-        
-        let archive_size = fs::metadata(archive_path)?.len();
-        
+}
+
+impl ArchiveManager {
+    /// Подготовить читаемый tar.zst (расшифровать при необходимости).
+    ///
+    /// Возвращает путь к потоку и, если выполнялась расшифровка, временный
+    /// файл (его нужно держать живым на время чтения).
+    fn prepare_source(
+        archive: &Path,
+        passphrase: Option<&str>,
+    ) -> Result<(PathBuf, Option<tempfile::TempPath>)> {
+        match passphrase {
+            Some(pass) => {
+                let tmp = tempfile::NamedTempFile::new()?;
+                security::decrypt_file(archive, tmp.path(), pass)?;
+                let temp_path = tmp.into_temp_path();
+                let path = temp_path.to_path_buf();
+                Ok((path, Some(temp_path)))
+            }
+            None => Ok((archive.to_path_buf(), None)),
+        }
+    }
+
+    /// Открыть tar-архив поверх zstd-потока.
+    fn open_tar(path: &Path) -> Result<tar::Archive<Box<dyn Read>>> {
+        let file = File::open(path)?;
+        let decoder = zstd::stream::read::Decoder::new(file)
+            .map_err(|e| MigrationError::CorruptedArchive(format!("декодирование: {}", e)))?;
+        Ok(tar::Archive::new(Box::new(decoder)))
+    }
+
+    /// Прочитать и проверить манифест архива.
+    pub fn read_manifest(archive: &Path, passphrase: Option<&str>) -> Result<ArchiveManifest> {
+        let (source, _keep) = Self::prepare_source(archive, passphrase)?;
+        let mut tar_reader = Self::open_tar(&source)?;
+
+        for entry in tar_reader.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_string_lossy().to_string();
+            if path != "manifest.json" {
+                continue;
+            }
+
+            let mut content = String::new();
+            entry.read_to_string(&mut content)?;
+            let manifest: ArchiveManifest = serde_json::from_str(&content)
+                .map_err(|e| MigrationError::CorruptedArchive(format!("манифест: {}", e)))?;
+
+            if manifest.format_version != crate::config::ARCHIVE_FORMAT_VERSION {
+                return Err(MigrationError::Unsupported(format!(
+                    "версия формата архива {} (поддерживается {})",
+                    manifest.format_version,
+                    crate::config::ARCHIVE_FORMAT_VERSION
+                )));
+            }
+
+            if !manifest.verify_hash()? {
+                return Err(MigrationError::ChecksumMismatch(
+                    "манифест архива повреждён (хеш не совпадает)".to_string(),
+                ));
+            }
+
+            return Ok(manifest);
+        }
+
+        Err(MigrationError::CorruptedArchive(
+            "manifest.json отсутствует в архиве".to_string(),
+        ))
+    }
+
+    /// Получить информацию об архиве без восстановления.
+    pub fn inspect(archive: &Path, passphrase: Option<&str>) -> Result<ArchiveInfo> {
+        let manifest = Self::read_manifest(archive, passphrase)?;
+        let integrity_verified = manifest.verify_hash()?;
+        let archive_size = std::fs::metadata(archive)?.len();
+
         Ok(ArchiveInfo {
             manifest,
-            archive_path: archive_path.to_path_buf(),
+            archive_path: archive.to_path_buf(),
             archive_size,
             integrity_verified,
         })
     }
-    
-    /// Проверить контрольную сумму архива
-    pub fn verify_archive(archive_path: &Path, passphrase: &str) -> Result<bool> {
-        let info = Self::inspect_archive(archive_path, passphrase)?;
-        Ok(info.integrity_verified)
+
+    /// Список относительных путей внутри архива.
+    pub fn list_contents(archive: &Path, passphrase: Option<&str>) -> Result<Vec<String>> {
+        let manifest = Self::read_manifest(archive, passphrase)?;
+        Ok(manifest
+            .files
+            .into_iter()
+            .map(|file| file.relative_path)
+            .collect())
     }
-    
-    // === Приватные методы ===
-    
-    /// Создать tar+zstd архив из файлов
-    fn create_tar_archive(
-        archive_path: &Path,
-        manifest_json: &str,
-        files: &[FileEntry],
-        source_home: &Path,
-    ) -> Result<()> {
-        use zstd::stream::write::Encoder;
-        
-        let file = File::create(archive_path)?;
-        let encoder = Encoder::new(file, 3)?; // Уровень сжатия 3
-        let mut tar_builder = tar::Builder::new(encoder);
-        
-        // Добавление манифеста первым файлом
-        let mut header = tar::Header::new_gnu();
-        header.set_path("manifest.json")?;
-        header.set_size(manifest_json.len() as u64);
-        header.set_mode(0o644);
-        header.set_mtime(SystemTime::now()
-            .duration_since(UNIX_EPOCH)?.as_secs());
-        header.set_cksum();
-        
-        tar_builder.append_data(&mut header, "manifest.json", manifest_json.as_bytes())?;
-        
-        // Добавление файлов данных
-        for file_entry in files {
-            let full_path = source_home.join(&file_entry.source_path);
-            
-            if !full_path.exists() {
-                log::warn!("Файл не найден: {}", full_path.display());
+
+    /// Проверка архива: манифест и, при `deep`, хеши файлов.
+    pub fn verify(archive: &Path, passphrase: Option<&str>, deep: bool) -> Result<VerifyReport> {
+        let manifest = Self::read_manifest(archive, passphrase)?;
+        let mut report = VerifyReport {
+            manifest_ok: manifest.verify_hash()?,
+            ..Default::default()
+        };
+
+        if !deep {
+            return Ok(report);
+        }
+
+        let (source, _keep) = Self::prepare_source(archive, passphrase)?;
+        let mut tar_reader = Self::open_tar(&source)?;
+
+        let by_path: HashMap<&str, &FileEntry> = manifest
+            .files
+            .iter()
+            .map(|file| (file.relative_path.as_str(), file))
+            .collect();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        for entry in tar_reader.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_string_lossy().to_string();
+            if path == "manifest.json" {
                 continue;
             }
-            
-            if file_entry.is_symlink {
-                // Символическая ссылка
-                if let Some(target) = &file_entry.symlink_target {
-                    tar_builder.append_link(&mut tar::Header::new_gnu(), 
-                                           &file_entry.relative_path, target)?;
-                }
+
+            let expected = match by_path.get(path.as_str()) {
+                Some(file) => *file,
+                None => continue,
+            };
+            seen.insert(path.clone());
+
+            let actual = if expected.is_symlink {
+                let target = entry
+                    .link_name()?
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                security::compute_sha256_from_data(target.as_bytes())
             } else {
-                // Обычный файл
-                let mut file = File::open(&full_path)?;
-                tar_builder.append_path_with_name(&full_path, &file_entry.relative_path)?;
+                security::hash_reader(&mut entry)?
+            };
+
+            report.checked_files += 1;
+            if !actual.eq_ignore_ascii_case(&expected.hash) {
+                report.mismatched.push(path);
             }
         }
-        
-        // Завершение архива
-        let encoder = tar_builder.into_inner()?;
-        encoder.finish()?.flush()?;
-        
+
+        for file in &manifest.files {
+            if !seen.contains(&file.relative_path) {
+                report.missing.push(file.relative_path.clone());
+            }
+        }
+
+        Ok(report)
+    }
+}
+
+
+
+/// Определить конфликт для файла архива относительно целевого пути.
+fn detect_conflict_for(
+    file_entry: &FileEntry,
+    destination: &Path,
+    relative: &Path,
+    source_mtime: Option<u64>,
+) -> Result<Option<ConflictInfo>> {
+    let metadata = match std::fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(None),
+    };
+
+    let target_size = metadata.len();
+    let target_mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+
+    let kind = if file_entry.size == target_size && !file_entry.is_symlink {
+        ConflictKind::Identical
+    } else {
+        let source_newer = match (source_mtime, target_mtime) {
+            (Some(source), Some(target)) => source > target,
+            _ => true,
+        };
+        if source_newer {
+            ConflictKind::SourceNewer
+        } else {
+            ConflictKind::TargetNewer
+        }
+    };
+
+    Ok(Some(ConflictInfo {
+        target_path: destination.to_path_buf(),
+        relative_path: relative.to_path_buf(),
+        kind,
+        source_size: file_entry.size,
+        target_size,
+        decision: None,
+    }))
+}
+
+/// Путь «второй копии» для стратегии KeepBoth.
+fn alternate_path(destination: &Path) -> PathBuf {
+    let name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+
+    for counter in 0..1000 {
+        let candidate_name = if counter == 0 {
+            format!("{}.from-archive", name)
+        } else {
+            format!("{}.from-archive-{}", name, counter)
+        };
+        let candidate = destination.with_file_name(&candidate_name);
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            return candidate;
+        }
+    }
+
+    destination.with_file_name(format!("{}.from-archive-{}", name, uuid::Uuid::new_v4()))
+}
+
+/// Путь сохранённой старой версии для стратегии RenameOld.
+fn old_path(destination: &Path) -> PathBuf {
+    let name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+
+    for counter in 0..1000 {
+        let candidate_name = if counter == 0 {
+            format!("{}.old", name)
+        } else {
+            format!("{}.old-{}", name, counter)
+        };
+        let candidate = destination.with_file_name(&candidate_name);
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            return candidate;
+        }
+    }
+
+    destination.with_file_name(format!("{}.old-{}", name, uuid::Uuid::new_v4()))
+}
+
+impl ArchiveManager {
+    /// Записать одну запись архива в целевой путь (атомарно).
+    fn extract_entry(
+        entry: &mut tar::Entry<'_, Box<dyn Read>>,
+        file_entry: &FileEntry,
+        destination: &Path,
+    ) -> Result<()> {
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        if file_entry.is_symlink {
+            file_transfer::remove_path(destination)?;
+            let target = file_entry.symlink_target.clone().unwrap_or_default();
+            create_symlink(Path::new(&target), destination)?;
+            return Ok(());
+        }
+
+        let temp = file_transfer::temp_path_for(destination);
+        {
+            let mut out = File::create(&temp)?;
+            std::io::copy(entry, &mut out)?;
+            out.flush()?;
+        }
+
+        if let Ok(mode) = entry.header().mode() {
+            let _ = platform::set_mode(&temp, mode);
+        }
+
+        file_transfer::replace_atomically(&temp, destination)
+    }
+}
+
+/// Создать символическую ссылку (на Windows — с эвристикой файл/каталог).
+fn create_symlink(target: &Path, destination: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, destination)?;
         Ok(())
     }
-    
-    /// Извлечь архив в целевую директорию
-    fn extract_archive(
-        archive_path: &Path,
-        target_path: &Path,
-        components: Option<&[ComponentType]>,
-        overwrite: bool,
-    ) -> Result<ArchiveManifest> {
-        use zstd::stream::read::Decoder;
-        
-        let file = File::open(archive_path)?;
-        let decoder = Decoder::new(file)?;
-        let mut tar_archive = tar::Archive::new(decoder);
-        
-        // Сначала извлекаем манифест
-        let entries = tar_archive.entries()?;
-        let mut manifest: Option<ArchiveManifest> = None;
-        let mut other_entries = Vec::new();
-        
-        for entry_result in entries {
-            let mut entry = entry_result?;
-            let path = entry.path()?.to_string_lossy().to_string();
-            
-            if path == "manifest.json" {
-                let mut content = String::new();
-                entry.read_to_string(&mut content)?;
-                manifest = Some(serde_json::from_str(&content)?);
-            } else {
-                other_entries.push(path);
-            }
+
+    #[cfg(windows)]
+    {
+        if target.is_dir() {
+            std::os::windows::fs::symlink_dir(target, destination)?;
+        } else {
+            std::os::windows::fs::symlink_file(target, destination)?;
         }
-        
-        let manifest = manifest.context("Манифест не найден в архиве")?;
-        
-        // Создание целевой директории
-        fs::create_dir_all(target_path)?;
-        
-        // Извлечение остальных файлов
-        let mut tar_archive = tar::Archive::new(Decoder::new(File::open(archive_path)?)?);
-        for mut entry in tar_archive.entries()? {
-            let entry_path = entry.path()?.to_string_lossy().to_string();
-            
-            if entry_path == "manifest.json" {
-                continue; // Пропускаем манифест
+        Ok(())
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, destination);
+        Err(MigrationError::Unsupported(
+            "символические ссылки не поддерживаются".to_string(),
+        ))
+    }
+}
+
+
+impl ArchiveManager {
+    /// Восстановить архив в целевой каталог.
+    pub fn restore(
+        options: &RestoreOptions,
+        observer: &dyn ProgressObserver,
+    ) -> Result<RestoreResult> {
+        let manifest = Self::read_manifest(&options.archive, options.passphrase.as_deref())?;
+        let mut result = RestoreResult::default();
+
+        let wanted: Vec<&FileEntry> = match &options.components {
+            Some(components) => manifest.files_for_components(components),
+            None => manifest.files.iter().collect(),
+        };
+        let required: u64 = wanted.iter().map(|file| file.size).sum();
+
+        std::fs::create_dir_all(&options.target_root)?;
+        file_transfer::ensure_space(&options.target_root, required)?;
+
+        let (source_path, _keep) =
+            Self::prepare_source(&options.archive, options.passphrase.as_deref())?;
+        let mut tar_reader = Self::open_tar(&source_path)?;
+
+        // Ключи манифеста нормализуются к '/' — tar хранит пути с '/',
+        // а сканер на Windows может дать '\'.
+        let by_path: HashMap<String, &FileEntry> = manifest
+            .files
+            .iter()
+            .map(|file| (file.relative_path.replace('\\', "/"), file))
+            .collect();
+        let mut resolver = ConflictResolver::new(options.strategy);
+        let mut done_bytes = 0u64;
+
+        for entry in tar_reader.entries()? {
+            let mut entry = entry?;
+            let raw_path = entry.path()?.to_string_lossy().to_string();
+            if raw_path == "manifest.json" {
+                continue;
             }
-            
-            // Проверка компонента если указана фильтрация
-            if let Some(components) = components {
-                if !components.iter().any(|c| entry_path.starts_with(&Self::component_to_prefix(c))) {
+
+            let file_entry = match by_path.get(&raw_path.replace('\\', "/")) {
+                Some(file) => *file,
+                None => continue,
+            };
+
+            if let Some(components) = &options.components {
+                if !components.iter().any(|c| file_entry.matches_component(c)) {
                     continue;
                 }
             }
-            
-            // Защита от path traversal при извлечении
-            let safe_path = Self::sanitize_path(&entry_path)?;
-            let full_target_path = target_path.join(safe_path);
-            
-            // Проверка конфликта файлов
-            if full_target_path.exists() && !overwrite {
-                log::warn!("Файл уже существует: {}", full_target_path.display());
-                // TODO: Реализовать стратегию разрешения конфликтов
-                continue;
-            }
-            
-            // Создание родительских директорий
-            if let Some(parent) = full_target_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            
-            // Извлечение файла
-            entry.unpack(&full_target_path)?;
-            
-            // Восстановление прав доступа
-            if let Ok(metadata) = entry.header().mode() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    fs::set_permissions(&full_target_path, 
-                                       fs::Permissions::from_mode(metadata))?;
+
+            // Защита от path traversal: путь берётся только из манифеста
+            let relative = security::sanitize_relative_path(Path::new(&file_entry.relative_path))
+                .map_err(|_| MigrationError::PathTraversal(file_entry.relative_path.clone()))?;
+            let mut destination = security::safe_join(&options.target_root, &relative)?;
+
+            let source_mtime = entry.header().mtime().ok();
+
+            if let Some(conflict) =
+                detect_conflict_for(file_entry, &destination, &relative, source_mtime)?
+            {
+                let decision = resolver.resolve(conflict)?;
+                match decision {
+                    ConflictStrategy::Skip => {
+                        result.skipped_files += 1;
+                        continue;
+                    }
+                    ConflictStrategy::Replace => {
+                        if !options.dry_run {
+                            file_transfer::remove_path(&destination)?;
+                        }
+                    }
+                    ConflictStrategy::RenameOld => {
+                        if !options.dry_run {
+                            let backup = old_path(&destination);
+                            std::fs::rename(&destination, &backup)?;
+                        }
+                    }
+                    ConflictStrategy::KeepBoth => {
+                        destination = alternate_path(&destination);
+                    }
+                    _ => {
+                        result.skipped_files += 1;
+                        continue;
+                    }
                 }
             }
-        }
-        
-        Ok(manifest)
-    }
-    
-    /// Извлечь только манифест из архива
-    fn extract_manifest_only(archive_path: &Path) -> Result<ArchiveManifest> {
-        use zstd::stream::read::Decoder;
-        
-        let file = File::open(archive_path)?;
-        let decoder = Decoder::new(file)?;
-        let mut tar_archive = tar::Archive::new(decoder);
-        
-        for mut entry in tar_archive.entries()? {
-            let path = entry.path()?.to_string_lossy().to_string();
-            if path == "manifest.json" {
-                let mut content = String::new();
-                entry.read_to_string(&mut content)?;
-                return Ok(serde_json::from_str(&content)?);
+
+            if options.dry_run {
+                result.restored_files += 1;
+                result.restored_bytes += file_entry.size;
+                continue;
             }
-        }
-        
-        bail!("Манифест не найден в архиве")
-    }
-    
-    /// Получить префикс пути для компонента
-    fn component_to_prefix(component: &ComponentType) -> String {
-        match component {
-            ComponentType::Desktop => "Desktop".to_string(),
-            ComponentType::Documents => "Documents".to_string(),
-            ComponentType::Downloads => "Downloads".to_string(),
-            ComponentType::Pictures => "Pictures".to_string(),
-            ComponentType::Videos => "Videos".to_string(),
-            ComponentType::Music => "Music".to_string(),
-            ComponentType::Templates => "Templates".to_string(),
-            ComponentType::AppConfigs => ".config".to_string(),
-            ComponentType::AppData => ".local/share".to_string(),
-            ComponentType::SshKeys => ".ssh".to_string(),
-            ComponentType::Fonts => ".fonts".to_string(),
-            ComponentType::Themes => ".themes".to_string(),
-            ComponentType::Icons => ".icons".to_string(),
-            ComponentType::LocalApps => ".local/share/applications".to_string(),
-            ComponentType::CustomDirs => String::new(),
-            _ => String::new(),
-        }
-    }
-    
-    /// Определить информацию об ОС
-    fn detect_os_info() -> Result<OsInfo> {
-        let os_release = fs::read_to_string("/etc/os-release")
-            .unwrap_or_else(|_| "NAME=\"RED OS\"\nVERSION=\"7.3\"".to_string());
-        
-        let mut name = "RED OS".to_string();
-        let mut version = "unknown".to_string();
-        
-        for line in os_release.lines() {
-            if line.starts_with("NAME=") {
-                name = line.trim_start_matches("NAME=").trim_matches('"').to_string();
+
+            match Self::extract_entry(&mut entry, file_entry, &destination) {
+                Ok(()) => {
+                    result.restored_files += 1;
+                    result.restored_bytes += file_entry.size;
+
+                    if options.verify_hash && !file_entry.is_symlink {
+                        if let Ok(actual) = security::compute_sha256(&destination) {
+                            result.verified_files += 1;
+                            if !actual.sha256.eq_ignore_ascii_case(&file_entry.hash) {
+                                result
+                                    .errors
+                                    .push(format!("хеш не совпадает: {}", raw_path));
+                            }
+                        }
+                    }
+                }
+                Err(error) => result.errors.push(format!("{}: {}", raw_path, error)),
             }
-            if line.starts_with("VERSION=") {
-                version = line.trim_start_matches("VERSION=").trim_matches('"').to_string();
-            }
+
+            done_bytes += file_entry.size;
+            observer.on_progress(done_bytes, required, &destination);
+            observer.on_file_done(&destination, file_entry.size);
         }
-        
-        let architecture = std::env::consts::ARCH.to_string();
-        
-        Ok(OsInfo {
-            name,
-            version,
-            architecture,
-        })
-    }
-    
-    /// Вычислить SHA-256 хеш данных
-    fn compute_hash(data: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        let result = hasher.finalize();
-        format!("{:x}", result)
-    }
-    
-    /// Проверить путь архива на безопасность
-    fn validate_archive_path(path: &Path) -> Result<()> {
-        // Проверка на абсолютный путь
-        if !path.is_absolute() {
-            bail!("Путь архива должен быть абсолютным");
-        }
-        
-        // Проверка расширения
-        if path.extension().map_or(true, |ext| ext != ARCHIVE_EXTENSION) {
-            bail!("Неверное расширение файла. Ожидается .{}", ARCHIVE_EXTENSION);
-        }
-        
-        Ok(())
-    }
-    
-    /// Проверить путь восстановления на безопасность
-    fn validate_restore_path(path: &Path) -> Result<()> {
-        if !path.is_absolute() {
-            bail!("Путь восстановления должен быть абсолютным");
-        }
-        
-        // Нормализация пути и проверка на выход за пределы
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        Self::sanitize_path(canonical.to_str().unwrap_or(""))?;
-        
-        Ok(())
-    }
-    
-    /// Санитизировать путь (защита от path traversal)
-    fn sanitize_path(path_str: &str) -> Result<PathBuf> {
-        let path = PathBuf::from(path_str);
-        
-        // Проверка на наличие ".."
-        for component in path.components() {
-            if let std::path::Component::ParentDir = component {
-                bail!("Обнаружен path traversal: {}", path_str);
-            }
-        }
-        
-        Ok(path)
+
+        result.conflicts = resolver.conflicts().to_vec();
+        Ok(result)
     }
 }
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-    
-    #[test]
-    fn test_validate_archive_path() {
-        // Допустимый путь
-        let valid_path = PathBuf::from("/home/user/backup.rmm");
-        assert!(ArchiveManager::validate_archive_path(&valid_path).is_ok());
-        
-        // Неверное расширение
-        let invalid_ext = PathBuf::from("/home/user/backup.tar");
-        assert!(ArchiveManager::validate_archive_path(&invalid_ext).is_err());
-        
-        // Относительный путь
-        let relative_path = PathBuf::from("backup.rmm");
-        assert!(ArchiveManager::validate_archive_path(&relative_path).is_err());
+    use crate::file_transfer::NoProgress;
+    use crate::platform;
+    use tempfile::tempdir;
+
+    fn make_home(dir: &Path) -> PathBuf {
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join("Documents")).expect("mkdir");
+        std::fs::create_dir_all(home.join(".config")).expect("mkdir");
+        std::fs::write(home.join("Documents/report.txt"), b"hello archive").expect("write");
+        std::fs::write(home.join(".config/app.conf"), b"key=value").expect("write");
+        home
     }
-    
-    #[test]
-    fn test_sanitize_path() {
-        // Нормальный путь
-        let normal = ArchiveManager::sanitize_path("Documents/file.txt").unwrap();
-        assert_eq!(normal, PathBuf::from("Documents/file.txt"));
-        
-        // Path traversal
-        let traversal = ArchiveManager::sanitize_path("../etc/passwd");
-        assert!(traversal.is_err());
-        
-        // Сложный path traversal
-        let complex = ArchiveManager::sanitize_path("Documents/../../../etc/passwd");
-        assert!(complex.is_err());
+
+    fn make_items(home: &Path) -> Vec<TransferItem> {
+        vec![
+            TransferItem::file(
+                home.join("Documents/report.txt"),
+                "Documents/report.txt",
+                13,
+            ),
+            TransferItem::file(home.join(".config/app.conf"), ".config/app.conf", 9),
+        ]
     }
-    
-    #[test]
-    fn test_component_to_prefix() {
-        assert_eq!(ArchiveManager::component_to_prefix(&MigrationComponent::Desktop), "Desktop");
-        assert_eq!(ArchiveManager::component_to_prefix(&MigrationComponent::SshKeys), ".ssh");
-        assert_eq!(ArchiveManager::component_to_prefix(&MigrationComponent::Config), ".config");
+
+    fn create_options(
+        home: &Path,
+        output: &Path,
+        passphrase: Option<&str>,
+    ) -> CreateArchiveOptions {
+        CreateArchiveOptions {
+            output: output.to_path_buf(),
+            source_home: home.to_path_buf(),
+            items: make_items(home),
+            components: vec![ComponentType::Documents, ComponentType::AppConfigs],
+            passphrase: passphrase.map(str::to_string),
+            compression_level: 3,
+            dry_run: false,
+        }
     }
-    
+
+    fn restore_options(archive: &Path, target: &Path) -> RestoreOptions {
+        RestoreOptions {
+            archive: archive.to_path_buf(),
+            passphrase: None,
+            target_root: target.to_path_buf(),
+            components: None,
+            strategy: ConflictStrategy::Replace,
+            verify_hash: true,
+            dry_run: false,
+        }
+    }
+
     #[test]
-    fn test_compute_hash() {
-        let data = b"test data";
-        let hash1 = ArchiveManager::compute_hash(data);
-        let hash2 = ArchiveManager::compute_hash(data);
-        assert_eq!(hash1, hash2);
-        
-        let different_data = b"different data";
-        let hash3 = ArchiveManager::compute_hash(different_data);
-        assert_ne!(hash1, hash3);
+    fn test_create_inspect_verify_round_trip() {
+        let dir = tempdir().expect("tempdir");
+        let home = make_home(dir.path());
+        let output = dir.path().join("profile.rmm");
+
+        let created =
+            ArchiveManager::create(&create_options(&home, &output, None), &NoProgress)
+                .expect("create");
+
+        assert!(created.archive_size > 0);
+        assert!(!created.encrypted);
+        assert_eq!(created.manifest.total_files, 2);
+        assert!(created.manifest.manifest_hash.is_some());
+        assert_eq!(created.manifest.source_uid, platform::current_uid());
+
+        let info = ArchiveManager::inspect(&output, None).expect("inspect");
+        assert!(info.integrity_verified);
+        assert_eq!(info.manifest.total_files, 2);
+
+        let contents = ArchiveManager::list_contents(&output, None).expect("list");
+        assert_eq!(contents.len(), 2);
+        assert!(contents.iter().any(|path| path.ends_with("report.txt")));
+
+        let report = ArchiveManager::verify(&output, None, true).expect("verify");
+        assert!(report.is_valid(), "отчёт: {:?}", report);
+        assert_eq!(report.checked_files, 2);
+
+        let shallow = ArchiveManager::verify(&output, None, false).expect("shallow");
+        assert!(shallow.is_valid());
+        assert_eq!(shallow.checked_files, 0);
+    }
+
+    #[test]
+    fn test_restore_and_conflicts() {
+        let dir = tempdir().expect("tempdir");
+        let home = make_home(dir.path());
+        let output = dir.path().join("profile.rmm");
+        ArchiveManager::create(&create_options(&home, &output, None), &NoProgress)
+            .expect("create");
+
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(target.join("Documents")).expect("mkdir");
+        std::fs::write(target.join("Documents/report.txt"), b"old content").expect("write");
+
+        // Конфликт + фильтр компонентов: под заменой ничего не должно быть
+        let mut options = restore_options(&output, &target);
+        options.components = Some(vec![ComponentType::Documents]);
+        options.strategy = ConflictStrategy::Skip;
+
+        let result = ArchiveManager::restore(&options, &NoProgress).expect("restore");
+        assert!(result.is_success(), "ошибки: {:?}", result.errors);
+        assert_eq!(result.skipped_files, 1);
+        assert_eq!(result.restored_files, 0);
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(
+            std::fs::read(target.join("Documents/report.txt")).expect("read"),
+            b"old content"
+        );
+
+        // Полное восстановление с заменой
+        let result =
+            ArchiveManager::restore(&restore_options(&output, &target), &NoProgress)
+                .expect("restore");
+        assert!(result.is_success(), "ошибки: {:?}", result.errors);
+        assert_eq!(result.restored_files, 2);
+        assert_eq!(result.verified_files, 2);
+        assert_eq!(
+            std::fs::read(target.join("Documents/report.txt")).expect("read"),
+            b"hello archive"
+        );
+        assert_eq!(
+            std::fs::read(target.join(".config/app.conf")).expect("read"),
+            b"key=value"
+        );
+    }
+
+
+    #[test]
+    fn test_dry_run_create_and_restore() {
+        let dir = tempdir().expect("tempdir");
+        let home = make_home(dir.path());
+        let output = dir.path().join("profile.rmm");
+
+        let mut options = create_options(&home, &output, None);
+        options.dry_run = true;
+        let created = ArchiveManager::create(&options, &NoProgress).expect("dry-run");
+        assert!(!output.exists());
+        assert_eq!(created.archive_size, 0);
+        assert_eq!(created.manifest.total_files, 2);
+
+        ArchiveManager::create(&create_options(&home, &output, None), &NoProgress)
+            .expect("create");
+
+        let target = dir.path().join("target-dry");
+        let mut restore = restore_options(&output, &target);
+        restore.dry_run = true;
+        let result = ArchiveManager::restore(&restore, &NoProgress).expect("restore dry");
+        assert_eq!(result.restored_files, 2);
+        assert!(!target.join("Documents/report.txt").exists());
+    }
+
+    #[test]
+    fn test_encrypted_archive_round_trip() {
+        let dir = tempdir().expect("tempdir");
+        let home = make_home(dir.path());
+        let output = dir.path().join("secret.rmm");
+        let passphrase = "correct horse battery";
+
+        let created = ArchiveManager::create(
+            &create_options(&home, &output, Some(passphrase)),
+            &NoProgress,
+        )
+        .expect("create");
+        assert!(created.encrypted);
+
+        // Без пароля прочитать нельзя
+        assert!(ArchiveManager::inspect(&output, None).is_err());
+
+        let info = ArchiveManager::inspect(&output, Some(passphrase)).expect("inspect");
+        assert!(info.integrity_verified);
+
+        // Неверный пароль
+        assert!(ArchiveManager::inspect(&output, Some("wrong")).is_err());
+
+        let target = dir.path().join("target-enc");
+        let mut options = restore_options(&output, &target);
+        options.passphrase = Some(passphrase.to_string());
+        let result = ArchiveManager::restore(&options, &NoProgress).expect("restore");
+        assert!(result.is_success(), "ошибки: {:?}", result.errors);
+        assert_eq!(
+            std::fs::read(target.join("Documents/report.txt")).expect("read"),
+            b"hello archive"
+        );
+    }
+
+    #[test]
+    fn test_create_rejects_empty_items() {
+        let dir = tempdir().expect("tempdir");
+        let options = CreateArchiveOptions {
+            output: dir.path().join("empty.rmm"),
+            source_home: dir.path().to_path_buf(),
+            items: Vec::new(),
+            components: Vec::new(),
+            passphrase: None,
+            compression_level: 3,
+            dry_run: false,
+        };
+        assert!(ArchiveManager::create(&options, &NoProgress).is_err());
+    }
+
+    #[test]
+    fn test_component_for_path() {
+        assert_eq!(
+            component_for_path("Documents/x.txt"),
+            Some(ComponentType::Documents)
+        );
+        assert_eq!(
+            component_for_path(".config/app.conf"),
+            Some(ComponentType::AppConfigs)
+        );
+        assert_eq!(component_for_path("unknown/file"), None);
     }
 }
+

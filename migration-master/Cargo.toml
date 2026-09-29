@@ -2,16 +2,17 @@
 name = "migration-master"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
 authors = ["Migration Master Team"]
 description = "Мастер миграции пользователя для РЕД ОС Linux"
 license = "GPL-3.0"
-repository = "https://github.com/redos/migration-master"
+repository = "https://github.com/flytimopheev-sketch/MMigration"
 keywords = ["migration", "backup", "redos", "linux", "desktop"]
 categories = ["system", "utilities"]
 
 [dependencies]
-# Async runtime
-tokio = { version = "1.35", features = ["full"] }
+# Async runtime (параллельные операции копирования и проверки хешей)
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 
 # Serialization
@@ -23,15 +24,12 @@ yaml-rust2 = "0.9"
 # Database
 rusqlite = { version = "0.31", features = ["bundled"] }
 
-# SSH
-ssh2 = "0.9"
-
 # Compression and archiving
 tar = "0.4"
 zstd = "0.13"
 flate2 = "1.0"
 
-# Encryption
+# Encryption (age)
 age = { version = "0.12", features = ["armor"] }
 
 # Hashing
@@ -49,16 +47,14 @@ once_cell = "1.19"
 
 # System information
 sysinfo = "0.30"
-whoami = "1.4"
+whoami = "1.6"
 hostname = "0.3"
 dirs = "5.0"
-users = "0.11"
 which = "6.0"
 
 # File system utilities
 walkdir = "2.4"
 tempfile = "3.9"
-fs_extra = "1.3"
 glob = "0.3"
 
 # Error handling
@@ -74,35 +70,38 @@ rand = "0.8"
 # Human-readable sizes
 human_bytes = "0.4"
 
-# Regex
+# Regex для разбора вывода rpm/dnf/cups
 regex = "1.10"
 
-# MIME type detection
-mime_guess = "2.0"
-
-# URL parsing for network printers
+# Разбор URI принтеров (ipp://, lpd://, smb://)
 url = "2.5"
 
-# Base64 encoding
+# Base64 для fingerprint SSH-ключей
 base64 = "0.21"
 
-# UUID for unique IDs
+# UUID для идентификаторов операций
 uuid = { version = "1.6", features = ["v4"] }
 
+# GUI (GTK4 + libadwaita) — только Linux, включается флагом `gui`
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk4 = { version = "0.9", optional = true }
+libadwaita = { version = "0.7", optional = true }
+
 [dev-dependencies]
-criterion = "0.5"
-mockall = "0.12"
 assert_cmd = "2.0"
 predicates = "3.1"
 
 [features]
 default = []
-gui = []
-cli-only = []
+gui = ["dep:gtk4", "dep:libadwaita"]
 
 [[bin]]
 name = "migration-master"
 path = "src/main.rs"
+
+[[bin]]
+name = "migration-master-helper"
+path = "src/bin/migration-master-helper.rs"
 
 [profile.release]
 lto = true

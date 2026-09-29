@@ -173,13 +173,14 @@ impl ProfileScanner {
             }
         }
 
+        let total_files = files.len();
         Ok(ProfileScanResult {
             home_dir: self.home_dir.clone(),
             username: self.username.clone(),
             uid: self.uid,
             gid: self.gid,
             files,
-            total_files: files.len(),
+            total_files,
             total_size,
             files_by_component,
             size_by_component,
@@ -223,17 +224,16 @@ impl ProfileScanner {
             .into_iter()
             .filter_entry(|e| {
                 // Пропускаем symlink на сокеты и устройства
-                if let Ok(ft) = e.file_type() {
-                    if ft.is_symlink() {
-                        // Проверяем куда ведёт symlink
-                        if let Ok(target) = fs::read_link(e.path()) {
-                            let target_str = target.to_string_lossy();
-                            if target_str.starts_with("/proc/") 
-                                || target_str.starts_with("/sys/")
-                                || target_str.starts_with("/dev/")
-                            {
-                                return false;
-                            }
+                let ft = e.file_type();
+                if ft.is_symlink() {
+                    // Проверяем куда ведёт symlink
+                    if let Ok(target) = fs::read_link(e.path()) {
+                        let target_str = target.to_string_lossy();
+                        if target_str.starts_with("/proc/")
+                            || target_str.starts_with("/sys/")
+                            || target_str.starts_with("/dev/")
+                        {
+                            return false;
                         }
                     }
                 }
@@ -243,7 +243,7 @@ impl ProfileScanner {
         for entry in walker {
             let entry = match entry {
                 Ok(e) => e,
-                Err(e) => {
+                Err(_e) => {
                     files.push(FileInfo {
                         path: String::new(),
                         relative_path: String::new(),

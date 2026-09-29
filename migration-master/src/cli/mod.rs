@@ -1,272 +1,321 @@
-//! Migration Master - Мастер миграции пользователя для РЕД ОС Linux
-//!
-//! CLI интерфейс
+//! Консольный интерфейс (clap): инспекция, создание, восстановление, миграция.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(name = "migration-master")]
-#[command(author = "Migration Master Team")]
-#[command(version = "0.1.0")]
-#[command(about = "Мастер миграции пользователя для РЕД ОС Linux", long_about = None)]
+use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
+use crate::config::{ComponentType, MigrationMode};
+use crate::conflict_resolver::ConflictStrategy;
+use crate::error::{MigrationError, Result};
+use crate::file_transfer::ProgressObserver;
+use crate::wizard::{MigrationWizard, WizardConfig};
+
+/// Разбор интерфейса командной строки.
+#[derive(Debug, Parser)]
+#[command(
+    name = "migration-master",
+    version,
+    about = "Мастер миграции пользователя для РЕД ОС Linux"
+)]
 pub struct Cli {
-    /// Уровень логирования (debug, info, warn, error)
-    #[arg(short, long, default_value = "info")]
-    pub verbose: String,
-
-    /// Путь к файлу конфигурации
-    #[arg(short, long)]
-    pub config: Option<PathBuf>,
-
     #[command(subcommand)]
     pub command: Commands,
 }
 
-#[derive(Subcommand)]
+/// Команды.
+#[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Сканирование текущего профиля пользователя
-    Scan {
-        /// Вывод в формате JSON
+    /// Просмотреть содержимое архива
+    Inspect {
+        /// Путь к архиву
+        archive: PathBuf,
+        /// Пароль шифрования
         #[arg(long)]
-        json: bool,
-
-        /// Компоненты для сканирования (через запятую)
-        #[arg(short, long)]
-        components: Option<String>,
-
-        /// Быстрая оценка без детального сканирования
-        #[arg(long)]
-        quick: bool,
+        passphrase: Option<String>,
     },
-
-    /// Создание зашифрованного архива профиля
-    CreateArchive {
-        /// Путь к выходному файлу
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-
-        /// Пароль для шифрования
-        #[arg(short, long)]
-        password: Option<String>,
-
-        /// Интерактивный ввод пароля
+    /// Создать архив из пользовательского профиля
+    Create {
+        /// Куда записать архив
+        #[arg(long, short)]
+        output: PathBuf,
+        /// Компоненты через запятую (documents,ssh_keys,...)
+        #[arg(long, default_value = "default")]
+        components: String,
+        /// Домашний каталог-источник
         #[arg(long)]
-        interactive: bool,
-
-        /// Компоненты для включения (через запятую)
-        #[arg(short, long)]
-        components: Option<String>,
-
+        home: Option<PathBuf>,
+        /// Пароль шифрования
+        #[arg(long)]
+        passphrase: Option<String>,
         /// Уровень сжатия (0-22)
-        #[arg(short, long, default_value = "3")]
+        #[arg(long, default_value_t = 3)]
         compression: i32,
-
-        /// Dry-run (без создания файла)
+        /// Только оценить, без записи
         #[arg(long)]
         dry_run: bool,
     },
-
-    /// Проверка содержимого архива
-    InspectArchive {
-        /// Путь к архиву
-        archive: PathBuf,
-
-        /// Вывод в формате JSON
-        #[arg(long)]
-        json: bool,
-
-        /// Показать подробную информацию
-        #[arg(short, long)]
-        verbose: bool,
-    },
-
-    /// Восстановление из архива
+    /// Восстановить архив в целевой каталог
     Restore {
         /// Путь к архиву
         archive: PathBuf,
-
-        /// Пароль для расшифрования
-        #[arg(short, long)]
-        password: Option<String>,
-
-        /// Компоненты для восстановления (через запятую)
+        /// Целевой домашний каталог
+        #[arg(long, short)]
+        target: PathBuf,
+        /// Компоненты через запятую
+        #[arg(long, default_value = "all")]
+        components: String,
+        /// Пароль шифрования
         #[arg(long)]
-        components: Option<String>,
-
-        /// Целевая директория (по умолчанию домашняя)
-        #[arg(short, long)]
-        target: Option<PathBuf>,
-
-        /// Dry-run (без внесения изменений)
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Стратегия обработки конфликтов (skip, replace, rename, ask)
+        passphrase: Option<String>,
+        /// Стратегия конфликтов: skip|replace|newer|keep-both|rename-old|ask
         #[arg(long, default_value = "ask")]
-        conflict_strategy: String,
-
-        /// Создать резервную копию перед восстановлением
-        #[arg(long)]
-        backup: bool,
-    },
-
-    /// Прямая миграция по SSH
-    MigrateSsh {
-        /// Хост источника (user@hostname или IP)
-        host: String,
-
-        /// Порт SSH
-        #[arg(short, long, default_value = "22")]
-        port: u16,
-
-        /// Путь к SSH ключу
-        #[arg(short, long)]
-        identity: Option<PathBuf>,
-
-        /// Компоненты для переноса (через запятую)
-        #[arg(short, long)]
-        components: Option<String>,
-
-        /// Dry-run (без передачи данных)
+        strategy: String,
+        /// Проверять хеши после восстановления
+        #[arg(long, default_value_t = true)]
+        verify: bool,
+        /// Только оценить, без изменений
         #[arg(long)]
         dry_run: bool,
-
-        /// Ограничение скорости (байт/сек)
-        #[arg(long)]
-        rate_limit: Option<u64>,
-
-        /// Использовать сжатие
-        #[arg(long)]
-        compress: bool,
     },
-
-    /// Проверка контрольных сумм
+    /// Проверить целостность архива
     Verify {
-        /// Путь к файлу или архиву
-        path: PathBuf,
-
-        /// Ожидаемый хеш
-        #[arg(short, long)]
-        expected: Option<String>,
-
-        /// Алгоритм хеширования (sha256)
-        #[arg(long, default_value = "sha256")]
-        algorithm: String,
-    },
-
-    /// Список установленных пакетов
-    ListPackages {
-        /// Вывод в формате JSON
+        /// Путь к архиву
+        archive: PathBuf,
+        /// Пароль шифрования
         #[arg(long)]
-        json: bool,
-
-        /// Фильтр по категории
-        #[arg(short, long)]
-        category: Option<String>,
-
-        /// Только пользовательские пакеты
-        #[arg(long)]
-        user_only: bool,
-    },
-
-    /// Список принтеров
-    ListPrinters {
-        /// Вывод в формате JSON
-        #[arg(long)]
-        json: bool,
-
-        /// Подробная информация
-        #[arg(short, long)]
-        verbose: bool,
-    },
-
-    /// Генерация отчёта о последней операции
-    Report {
-        /// ID миграции
-        #[arg(short, long)]
-        id: Option<String>,
-
-        /// Формат вывода (text, json, html)
-        #[arg(long, default_value = "text")]
-        format: String,
-
-        /// Путь к файлу отчёта
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
-
-    /// Управление настройками
-    Config {
-        /// Действие (get, set, list, reset)
-        action: String,
-
-        /// Ключ настройки
-        key: Option<String>,
-
-        /// Значение настройки
-        value: Option<String>,
-    },
-
-    /// Запуск GUI интерфейса
-    Gui {
-        /// Тёмная тема
-        #[arg(long)]
-        dark_theme: bool,
+        passphrase: Option<String>,
+        /// Проверять хеши всех файлов
+        #[arg(long, default_value_t = true)]
+        deep: bool,
     },
 }
 
-/// Парсинг аргументов командной строки
-pub fn parse_args() -> Cli {
-    Cli::parse()
+use std::path::Path;
+
+use crate::file_transfer::TransferItem;
+
+/// Консольный индикатор прогресса.
+pub struct ConsoleProgress {
+    last_percent: AtomicU64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl ConsoleProgress {
+    /// Создать индикатор.
+    pub fn new() -> Self {
+        Self {
+            last_percent: AtomicU64::new(0),
+        }
+    }
+}
 
-    #[test]
-    fn test_cli_scan() {
-        let cli = Cli::parse_from(["migration-master", "scan", "--json"]);
-        match cli.command {
-            Commands::Scan { json, .. } => assert!(json),
-            _ => panic!("Неверная команда"),
+impl Default for ConsoleProgress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProgressObserver for ConsoleProgress {
+    fn on_progress(&self, done_bytes: u64, total_bytes: u64, current: &Path) {
+        if total_bytes == 0 {
+            return;
+        }
+        let percent = done_bytes.saturating_mul(100) / total_bytes;
+        let last = self.last_percent.load(Ordering::Relaxed);
+        if percent >= last + 10 || percent >= 100 {
+            self.last_percent.store(percent, Ordering::Relaxed);
+            eprintln!("[{:>3}%] {}", percent, current.display());
         }
     }
 
-    #[test]
-    fn test_cli_create_archive() {
-        let cli = Cli::parse_from([
-            "migration-master",
-            "create-archive",
-            "-o",
-            "backup.rmm",
-            "--compression",
-            "5",
-        ]);
-        match cli.command {
-            Commands::CreateArchive { output, compression, .. } => {
-                assert_eq!(output, Some(PathBuf::from("backup.rmm")));
-                assert_eq!(compression, 5);
+    fn on_message(&self, message: &str) {
+        eprintln!("{}", message);
+    }
+}
+
+/// Разбор стратегии конфликтов.
+fn parse_strategy(strategy: &str) -> Result<ConflictStrategy> {
+    ConflictStrategy::from_key(strategy).map_err(MigrationError::InvalidInput)
+}
+
+impl Cli {
+    /// Выполнить команду.
+    pub fn run(self) -> Result<()> {
+        match self.command {
+            Commands::Inspect {
+                archive,
+                passphrase,
+            } => {
+                let info = ArchiveManager::inspect(&archive, passphrase.as_deref())?;
+                println!("Архив: {}", archive.display());
+                println!(
+                    "Формат: v{}; создан: {}",
+                    info.manifest.format_version, info.manifest.created_at
+                );
+                println!(
+                    "Источник: {}@{} ({} {})",
+                    info.manifest.source_user,
+                    info.manifest.source_hostname,
+                    info.manifest.os_info.name,
+                    info.manifest.os_info.architecture
+                );
+                println!(
+                    "Зашифрован: {}",
+                    if info.manifest.encrypted { "да" } else { "нет" }
+                );
+                println!(
+                    "Файлов: {} ({} байт); размер архива: {} байт",
+                    info.manifest.total_files, info.manifest.total_size, info.archive_size
+                );
+                println!(
+                    "Компоненты: {}",
+                    info.manifest
+                        .components
+                        .iter()
+                        .map(|component| component.key())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                for file in &info.manifest.files {
+                    println!("  {} ({} байт)", file.relative_path, file.size);
+                }
+                Ok(())
             }
-            _ => panic!("Неверная команда"),
+            Commands::Create {
+                output,
+                components,
+                home,
+                passphrase,
+                compression,
+                dry_run,
+            } => {
+                let components = parse_components(&components)?;
+                let source_home = home.unwrap_or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("."))
+                });
+                let items = scan_items(&source_home, &components)?;
+                let options = CreateArchiveOptions {
+                    output,
+                    source_home,
+                    items,
+                    components,
+                    passphrase,
+                    compression_level: compression,
+                    dry_run,
+                };
+                let progress = ConsoleProgress::new();
+                let created = ArchiveManager::create(&options, &progress)?;
+                println!("Архив: {}", created.path.display());
+                println!(
+                    "Файлов: {}, данных: {} байт, зашифрован: {}, {} мс",
+                    created.manifest.total_files,
+                    created.manifest.total_size,
+                    created.encrypted,
+                    created.duration_ms
+                );
+                Ok(())
+            }
+            Commands::Restore {
+                archive,
+                target,
+                components,
+                passphrase,
+                strategy,
+                verify,
+                dry_run,
+            } => {
+                let components = if components == "all" {
+                    None
+                } else {
+                    Some(parse_components(&components)?)
+                };
+                let options = RestoreOptions {
+                    archive,
+                    passphrase,
+                    target_root: target,
+                    components,
+                    strategy: parse_strategy(&strategy)?,
+                    verify_hash: verify,
+                    dry_run,
+                };
+                let progress = ConsoleProgress::new();
+                let result = ArchiveManager::restore(&options, &progress)?;
+
+                println!(
+                    "Восстановлено: {} ({} байт); пропущено: {}; проверено хешей: {}",
+                    result.restored_files, result.restored_bytes, result.skipped_files,
+                    result.verified_files
+                );
+                for conflict in &result.conflicts {
+                    println!("  конфликт: {}", conflict.describe());
+                }
+                for error in &result.errors {
+                    eprintln!("  ошибка: {}", error);
+                }
+
+                if result.is_success() {
+                    Ok(())
+                } else {
+                    Err(MigrationError::Conflict(format!(
+                        "восстановление завершено с ошибками: {}",
+                        result.errors.len()
+                    )))
+                }
+            }
+            Commands::Verify {
+                archive,
+                passphrase,
+                deep,
+            } => {
+                let report = ArchiveManager::verify(&archive, passphrase.as_deref(), deep)?;
+                println!(
+                    "Манифест: {}",
+                    if report.manifest_ok {
+                        "корректен"
+                    } else {
+                        "ПОВРЕЖДЁН"
+                    }
+                );
+                println!("Проверено файлов: {}", report.checked_files);
+                for path in &report.mismatched {
+                    println!("  хеш не совпадает: {}", path);
+                }
+                for path in &report.missing {
+                    println!("  отсутствует в архиве: {}", path);
+                }
+
+                if report.is_valid() {
+                    println!("Архив корректен.");
+                    Ok(())
+                } else {
+                    Err(MigrationError::CorruptedArchive(
+                        "архив повреждён".to_string(),
+                    ))
+                }
+            }
         }
     }
+}
 
-    #[test]
-    fn test_cli_restore() {
-        let cli = Cli::parse_from([
-            "migration-master",
-            "restore",
-            "backup.rmm",
-            "--dry-run",
-        ]);
-        match cli.command {
-            Commands::Restore { archive, dry_run, .. } => {
-                assert_eq!(archive, PathBuf::from("backup.rmm"));
-                assert!(dry_run);
-            }
-            _ => panic!("Неверная команда"),
-        }
+/// Собрать элементы профиля для упаковки.
+fn scan_items(home: &Path, components: &[ComponentType]) -> Result<Vec<TransferItem>> {
+    let config = WizardConfig {
+        components: components.to_vec(),
+        ..WizardConfig::new(MigrationMode::LocalArchive, home)
+    };
+    let mut wizard = MigrationWizard::new(config);
+    let inventory = wizard.scan()?.clone();
+    Ok(inventory.items)
+}
+
+/// Разбор компонентов из строки (`default`, `all` или список ключей).
+fn parse_components(list: &str) -> Result<Vec<ComponentType>> {
+    match list {
+        "default" => Ok(ComponentType::default_components()),
+        "all" => Ok(ComponentType::all_components()),
+        other => ComponentType::parse_list(other).map_err(MigrationError::InvalidInput),
     }
 }

@@ -168,8 +168,13 @@ impl DatabaseManager {
         
         let mut manager = Self { db_path, conn };
         manager.init_schema()?;
-        
+
         Ok(manager)
+    }
+
+    /// Путь к файлу базы данных.
+    pub fn path(&self) -> &Path {
+        &self.db_path
     }
 
     /// Инициализация схемы БД
@@ -368,9 +373,13 @@ impl DatabaseManager {
                 error_message: row.get("error_message")?,
                 duration_secs: row.get("duration_secs")?,
             })
-        })?;
+        });
 
-        Ok(row)
+        match row {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Получение истории миграций
