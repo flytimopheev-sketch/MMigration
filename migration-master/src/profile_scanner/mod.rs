@@ -106,6 +106,12 @@ impl ProfileScanner {
         })
     }
 
+    /// Переопределить домашний каталог (демонстрация, тесты, нестандартный профиль).
+    pub fn with_home(mut self, home: impl Into<PathBuf>) -> Self {
+        self.home_dir = home.into();
+        self
+    }
+
     /// Установка компонентов для сканирования
     pub fn with_components(mut self, components: Vec<ComponentType>) -> Self {
         self.components = components;

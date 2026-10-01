@@ -13,6 +13,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::cancel::CancelToken;
 use crate::config::ComponentType;
 use crate::conflict_resolver::{ConflictInfo, ConflictKind, ConflictResolver, ConflictStrategy};
 use crate::error::{MigrationError, Result};
@@ -176,8 +177,24 @@ pub struct CreateArchiveOptions {
     pub compression_level: i32,
     /// Режим без создания файла
     pub dry_run: bool,
+    /// Токен отмены длительной операции
+    pub cancel: Option<CancelToken>,
 }
 
+impl Default for CreateArchiveOptions {
+    fn default() -> Self {
+        Self {
+            output: PathBuf::new(),
+            source_home: PathBuf::new(),
+            items: Vec::new(),
+            components: Vec::new(),
+            passphrase: None,
+            compression_level: 3,
+            dry_run: false,
+            cancel: None,
+        }
+    }
+}
 /// Результат создания архива.
 #[derive(Debug, Clone)]
 pub struct CreateArchiveResult {
@@ -224,6 +241,8 @@ pub struct RestoreOptions {
     pub verify_hash: bool,
     /// Режим без изменений
     pub dry_run: bool,
+    /// Токен отмены длительной операции
+    pub cancel: Option<CancelToken>,
 }
 
 impl Default for RestoreOptions {
@@ -236,6 +255,7 @@ impl Default for RestoreOptions {
             strategy: ConflictStrategy::Ask,
             verify_hash: false,
             dry_run: false,
+            cancel: None,
         }
     }
 }
@@ -313,6 +333,10 @@ fn build_manifest(
     let mut done = 0u64;
 
     for item in &options.items {
+        if let Some(cancel) = &options.cancel {
+            cancel.check()?;
+        }
+
         let relative = item.relative.to_string_lossy().to_string();
         let component = component_for_path(&relative);
 
@@ -436,7 +460,13 @@ impl ArchiveManager {
             None => options.output.clone(),
         };
 
-        Self::write_archive(&target_path, options, &result.manifest, observer)?;
+        if let Err(error) = Self::write_archive(&target_path, options, &result.manifest, observer) {
+            // При отмене не оставляем «недозаписанный» архив на диске.
+            if error.is_cancelled() && target_path == options.output {
+                let _ = std::fs::remove_file(&target_path);
+            }
+            return Err(error);
+        }
 
         if let (Some(passphrase), Some(temp)) = (&options.passphrase, &temp) {
             security::encrypt_file(temp.path(), &options.output, passphrase)?;
@@ -473,6 +503,10 @@ impl ArchiveManager {
         let mut done = 0u64;
 
         for file_entry in &manifest.files {
+            if let Some(cancel) = &options.cancel {
+                cancel.check()?;
+            }
+
             let relative = Path::new(&file_entry.relative_path);
             let source = options.source_home.join(relative);
             let mut header = tar::Header::new_gnu();
@@ -628,10 +662,12 @@ impl ArchiveManager {
         let (source, _keep) = Self::prepare_source(archive, passphrase)?;
         let mut tar_reader = Self::open_tar(&source)?;
 
-        let by_path: HashMap<&str, &FileEntry> = manifest
+        // Пути манифеста и tar нормализуются к '/' (как и при восстановлении):
+        // на Windows сканер даёт '\', а tar хранит '/'.
+        let by_path: HashMap<String, &FileEntry> = manifest
             .files
             .iter()
-            .map(|file| (file.relative_path.as_str(), file))
+            .map(|file| (file.relative_path.replace('\\', "/"), file))
             .collect();
         let mut seen: HashSet<String> = HashSet::new();
 
@@ -642,11 +678,12 @@ impl ArchiveManager {
                 continue;
             }
 
-            let expected = match by_path.get(path.as_str()) {
+            let normalized = path.replace('\\', "/");
+            let expected = match by_path.get(&normalized) {
                 Some(file) => *file,
                 None => continue,
             };
-            seen.insert(path.clone());
+            seen.insert(normalized);
 
             let actual = if expected.is_symlink {
                 let target = entry
@@ -665,7 +702,7 @@ impl ArchiveManager {
         }
 
         for file in &manifest.files {
-            if !seen.contains(&file.relative_path) {
+            if !seen.contains(&file.relative_path.replace('\\', "/")) {
                 report.missing.push(file.relative_path.clone());
             }
         }
@@ -695,7 +732,16 @@ fn detect_conflict_for(
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs());
 
-    let kind = if file_entry.size == target_size && !file_entry.is_symlink {
+    // Идентичность определяем по содержимому (SHA-256), а не только по размеру:
+    // иначе разные файлы одного размера ошибочно считались бы идентичными
+    // и пропускались (потеря данных при стратегии Replace).
+    let identical = !file_entry.is_symlink
+        && file_entry.size == target_size
+        && security::compute_sha256(destination)
+            .map(|hash| hash.sha256.eq_ignore_ascii_case(&file_entry.hash))
+            .unwrap_or(false);
+
+    let kind = if identical {
         ConflictKind::Identical
     } else {
         let source_newer = match (source_mtime, target_mtime) {
@@ -857,6 +903,10 @@ impl ArchiveManager {
         let mut done_bytes = 0u64;
 
         for entry in tar_reader.entries()? {
+            if let Some(cancel) = &options.cancel {
+                cancel.check()?;
+            }
+
             let mut entry = entry?;
             let raw_path = entry.path()?.to_string_lossy().to_string();
             if raw_path == "manifest.json" {
@@ -987,6 +1037,7 @@ mod tests {
             passphrase: passphrase.map(str::to_string),
             compression_level: 3,
             dry_run: false,
+            cancel: None,
         }
     }
 
@@ -999,6 +1050,7 @@ mod tests {
             strategy: ConflictStrategy::Replace,
             verify_hash: true,
             dry_run: false,
+            cancel: None,
         }
     }
 
@@ -1149,6 +1201,7 @@ mod tests {
             passphrase: None,
             compression_level: 3,
             dry_run: false,
+            cancel: None,
         };
         assert!(ArchiveManager::create(&options, &NoProgress).is_err());
     }

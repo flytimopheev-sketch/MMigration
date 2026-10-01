@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::cancel::CancelToken;
 use crate::error::Result;
 use crate::platform;
 use crate::security;
@@ -53,6 +54,8 @@ pub struct CopyOptions {
     pub rate_limit: u64,
     /// Режим без реальных изменений
     pub dry_run: bool,
+    /// Токен отмены длительной операции
+    pub cancel: Option<CancelToken>,
 }
 
 impl Default for CopyOptions {
@@ -63,6 +66,7 @@ impl Default for CopyOptions {
             verify_hash: true,
             rate_limit: 0,
             dry_run: false,
+            cancel: None,
         }
     }
 }
@@ -191,8 +195,22 @@ pub fn copy_file(
 
     let mut buffer = vec![0u8; 128 * 1024];
     let mut written = 0u64;
+    let mut chunks_since_check = 0u32;
 
     loop {
+        // Отмена по Ctrl+C / кнопке «Отмена»: проверяем не каждый байт, а каждые 2 МБ.
+        chunks_since_check += 1;
+        if chunks_since_check >= 16 {
+            chunks_since_check = 0;
+            if let Some(token) = &options.cancel {
+                if token.is_cancelled() {
+                    drop(writer);
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(crate::error::MigrationError::Cancelled);
+                }
+            }
+        }
+
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -281,6 +299,11 @@ pub fn copy_items(
     let mut done_bytes = 0u64;
 
     for item in items {
+        if let Some(token) = &options.cancel {
+            // Отмена длительной операции между файлами.
+            token.check()?;
+        }
+
         let destination = security::safe_join(target_root, &item.relative)?;
         observer.on_progress(done_bytes, total_bytes, &destination);
 

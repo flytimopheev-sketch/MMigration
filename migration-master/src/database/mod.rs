@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::error::{MigrationError, Result};
 
+/// Строка сохранённого SSH-хоста: `(hostname, address, port, username, trusted)`.
+pub type HostRow = (String, String, u16, String, bool);
+
 /// Статус операции миграции
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -561,7 +564,7 @@ impl DatabaseManager {
     }
 
     /// Получение сохранённых хостов
-    pub fn get_hosts(&self) -> Result<Vec<(String, String, u16, String, bool)>> {
+    pub fn get_hosts(&self) -> Result<Vec<HostRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT hostname, address, port, username, trusted FROM hosts ORDER BY last_connected DESC"
         )?;
@@ -604,7 +607,7 @@ impl DatabaseManager {
         match result {
             Ok(val) => Ok(Some(val)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(MigrationError::Database(e.into())),
+            Err(e) => Err(MigrationError::Database(e)),
         }
     }
 }

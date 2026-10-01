@@ -16,6 +16,25 @@
 - **Проверка контрольных сумм** файлов
 - **Журналирование операций** в SQLite
 
+## Статус реализации
+
+Готово и покрыто тестами (ядро + CLI):
+
+- сканирование профиля, создание/просмотр/проверка/восстановление архива `.rmm`;
+- шифрование age, SHA-256, защита от path traversal, атомарная запись файлов;
+- SSH-политика ключей (приватные — только по явному согласию), права доступа;
+- разрешение конфликтов (skip/replace/keep-both/rename/newer/ask);
+- отмена длительных операций (Ctrl+C, токен отмены);
+- SQLite-история операций, отчёты (JSON/HTML/TXT/PDF), резервные копии;
+- CLI: `scan`, `create`, `inspect`, `verify`, `restore`, `list-packages`,
+  `list-printers`, `config`.
+
+В разработке (проверяется на целевой РЕД ОС):
+
+- GUI-мастер GTK4/libadwaita (`--features gui`);
+- прямые CLI-команды `migrate-ssh` и `report`;
+- сборка RPM, интеграция polkit, системные компоненты (CUPS, системные настройки).
+
 ## Требования
 
 - РЕД ОС Linux (x86_64)
@@ -71,62 +90,49 @@ sudo dnf install ./migration-master-*.rpm
 ### Командная строка
 
 ```bash
+# Справка по всем командам
+migration-master --help
+
 # Сканирование профиля
 migration-master scan
-
-# Сканирование с выводом JSON
 migration-master scan --json
-
-# Быстрая оценка размера
 migration-master scan --quick
+migration-master scan --home /home/user --components all
 
-# Создание архива
-migration-master create-archive -o backup.rmm
+# Создание архива профиля
+migration-master create --output profile.rmm
+migration-master create --output profile.rmm --passphrase
+migration-master create --output profile.rmm --components documents,ssh_keys
 
-# Создание зашифрованного архива
-migration-master create-archive -o backup.rmm -p
+# Просмотр содержимого без восстановления
+migration-master inspect profile.rmm
 
-# Проверка архива
-migration-master inspect-archive backup.rmm
+# Проверка целостности и хешей SHA-256
+migration-master verify profile.rmm
 
 # Восстановление из архива
-migration-master restore backup.rmm
+migration-master restore profile.rmm --target ./restore-test --dry-run
+migration-master restore profile.rmm --target ./restore-test --components documents,ssh_keys
+migration-master restore profile.rmm --target ./restore-test --strategy replace
 
-# Восстановление с dry-run
-migration-master restore backup.rmm --dry-run
-
-# SSH миграция
-migration-master migrate-ssh user@192.168.1.100
-
-# SSH миграция с dry-run
-migration-master migrate-ssh user@192.168.1.100 --dry-run
-
-# Проверка хеша файла
-migration-master verify file.txt --expected <hash>
-
-# Список пакетов
+# Список пакетов и принтеров
 migration-master list-packages
-
-# Список принтеров
 migration-master list-printers
 
-# Генерация отчёта
-migration-master report
-
-# Конфигурация
+# Настройки
+migration-master config path
 migration-master config list
 migration-master config reset
 ```
 
-### GUI интерфейс
+> Для зашифрованных архивов передавайте `--passphrase '<пароль>'` командам
+> `inspect`, `verify`, `restore`. Пароль нигде не сохраняется.
 
-```bash
-# Запуск GUI
-migration-master gui
+### Графический интерфейс
 
-# Запуск с тёмной темой
-migration-master gui --dark-theme
-```
+GUI-мастер (GTK4/libadwaita) — отдельный этап. Модуль `ui` собирается только
+с флагом `gui` на Linux (`cargo build --features gui`) и пока возвращает
+понятную ошибку вместо запуска мастера.
 
 ## Структура проекта
 
@@ -135,6 +141,7 @@ migration-master/
 ├── src/
 │   ├── main.rs           # CLI точка входа
 │   ├── lib.rs            # Библиотека
+│   ├── cancel.rs         # Отмена длительных операций (Ctrl+C)
 │   ├── cli/              # CLI интерфейс
 │   ├── config/           # Конфигурация
 │   ├── database/         # SQLite база данных

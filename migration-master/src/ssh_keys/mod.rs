@@ -145,9 +145,11 @@ fn classify(name: &str, path: &Path) -> SshKeyKind {
         .map(|content| content.contains("PRIVATE KEY"))
         .unwrap_or(false);
 
-    if is_private {
-        SshKeyKind::Private
-    } else if name.starts_with("id_") || name.ends_with("_rsa") || name.ends_with("_ed25519") {
+    if is_private
+        || name.starts_with("id_")
+        || name.ends_with("_rsa")
+        || name.ends_with("_ed25519")
+    {
         SshKeyKind::Private
     } else {
         SshKeyKind::Other

@@ -90,10 +90,11 @@ pub enum Theme {
 }
 
 /// Режим миграции
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MigrationMode {
     /// Локальный архив
+    #[default]
     LocalArchive,
     /// Прямая миграция по SSH
     SshDirect,
@@ -585,8 +586,10 @@ mod tests {
     fn test_config_save_and_load_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
-        let mut config = AppConfig::default();
-        config.history_days = 42;
+        let config = AppConfig {
+            history_days: 42,
+            ..AppConfig::default()
+        };
 
         save_config_to(&path, &config).expect("save");
         let loaded = load_config_from(&path).expect("load");

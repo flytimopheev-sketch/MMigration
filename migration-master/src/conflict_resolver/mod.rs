@@ -6,6 +6,9 @@ use crate::error::{MigrationError, Result};
 use crate::file_transfer::TransferItem;
 use crate::security;
 
+/// Интерактивный обработчик конфликта, возвращающий выбранную стратегию.
+pub type ConflictHandler = Box<dyn FnMut(&ConflictInfo) -> ConflictStrategy + Send>;
+
 /// Стратегия разрешения конфликтов.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -152,7 +155,7 @@ pub struct ConflictResolver {
     apply_to_all: Option<ConflictStrategy>,
     decisions: Vec<(PathBuf, ConflictStrategy)>,
     conflicts: Vec<ConflictInfo>,
-    interactive: Option<Box<dyn FnMut(&ConflictInfo) -> ConflictStrategy + Send>>,
+    interactive: Option<ConflictHandler>,
 }
 
 impl ConflictResolver {

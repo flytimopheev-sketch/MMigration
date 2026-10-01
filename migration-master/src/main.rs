@@ -12,6 +12,9 @@ fn main() {
     let _ = logging::init_logger(&log_path, 10);
     let _ = platform::hostname();
 
+    // Отмена длительных операций по Ctrl+C (токен проверяется в рабочих циклах).
+    migration_master::cancel::install_ctrl_c_handler();
+
     match cli.run() {
         Ok(()) => std::process::exit(0),
         Err(error) => {

@@ -6,10 +6,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use clap::{Parser, Subcommand};
 
 use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
-use crate::config::{ComponentType, MigrationMode};
+use crate::config::{self, ComponentType, MigrationMode};
 use crate::conflict_resolver::ConflictStrategy;
 use crate::error::{MigrationError, Result};
 use crate::file_transfer::ProgressObserver;
+use crate::packages::PackageManager;
+use crate::printers::PrinterManager;
+use crate::profile_scanner::ProfileScanner;
 use crate::wizard::{MigrationWizard, WizardConfig};
 
 /// Разбор интерфейса командной строки.
@@ -90,6 +93,49 @@ pub enum Commands {
         #[arg(long, default_value_t = true)]
         deep: bool,
     },
+    /// Просканировать профиль и показать состав
+    Scan {
+        /// Домашний каталог (по умолчанию — текущий пользователь)
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Компоненты через запятую (default, all или список ключей)
+        #[arg(long, default_value = "default")]
+        components: String,
+        /// Быстрая оценка размера без детального разбора
+        #[arg(long)]
+        quick: bool,
+        /// Вывести результат в формате JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Показать список установленных пакетов
+    ListPackages {
+        /// Вывести результат в формате JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Показать список принтеров (CUPS)
+    ListPrinters {
+        /// Вывести результат в формате JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Настройки приложения
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+/// Действия с конфигурацией приложения.
+#[derive(Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Показать текущие настройки
+    List,
+    /// Сбросить настройки к значениям по умолчанию
+    Reset,
+    /// Показать путь к файлу настроек
+    Path,
 }
 
 use std::path::Path;
@@ -137,6 +183,14 @@ impl ProgressObserver for ConsoleProgress {
 /// Разбор стратегии конфликтов.
 fn parse_strategy(strategy: &str) -> Result<ConflictStrategy> {
     ConflictStrategy::from_key(strategy).map_err(MigrationError::InvalidInput)
+}
+
+/// Домашний каталог по умолчанию (переменная `HOME` либо системный).
+fn default_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 impl Cli {
@@ -191,11 +245,7 @@ impl Cli {
                 dry_run,
             } => {
                 let components = parse_components(&components)?;
-                let source_home = home.unwrap_or_else(|| {
-                    std::env::var_os("HOME")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| PathBuf::from("."))
-                });
+                let source_home = home.unwrap_or_else(default_home);
                 let items = scan_items(&source_home, &components)?;
                 let options = CreateArchiveOptions {
                     output,
@@ -205,6 +255,7 @@ impl Cli {
                     passphrase,
                     compression_level: compression,
                     dry_run,
+                    cancel: Some(crate::cancel::global()),
                 };
                 let progress = ConsoleProgress::new();
                 let created = ArchiveManager::create(&options, &progress)?;
@@ -240,6 +291,7 @@ impl Cli {
                     strategy: parse_strategy(&strategy)?,
                     verify_hash: verify,
                     dry_run,
+                    cancel: Some(crate::cancel::global()),
                 };
                 let progress = ConsoleProgress::new();
                 let result = ArchiveManager::restore(&options, &progress)?;
@@ -295,6 +347,125 @@ impl Cli {
                         "архив повреждён".to_string(),
                     ))
                 }
+            }
+            Commands::Scan {
+                home,
+                components,
+                quick,
+                json,
+            } => {
+                let components = parse_components(&components)?;
+                let source_home = home.unwrap_or_else(default_home);
+                let scanner = ProfileScanner::new()?
+                    .with_home(source_home)
+                    .with_components(components);
+
+                if quick {
+                    let (files, bytes) = scanner.quick_estimate()?;
+                    if json {
+                        println!("{}", serde_json::json!({ "files": files, "bytes": bytes }));
+                    } else {
+                        println!(
+                            "Файлов: {}, размер: {}",
+                            files,
+                            human_bytes::human_bytes(bytes as f64)
+                        );
+                    }
+                    return Ok(());
+                }
+
+                let result = scanner.scan()?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    println!("Домашний каталог: {}", result.home_dir.display());
+                    println!(
+                        "Пользователь: {} (uid {}, gid {})",
+                        result.username, result.uid, result.gid
+                    );
+                    println!(
+                        "Файлов: {}, размер: {}",
+                        result.total_files,
+                        result.total_size_human()
+                    );
+
+                    let mut components: Vec<_> = result.files_by_component.iter().collect();
+                    components.sort_by(|a, b| a.0.cmp(b.0));
+                    for (component, count) in components {
+                        let bytes = result.size_by_component.get(component).copied().unwrap_or(0);
+                        println!(
+                            "  {}: {} файлов, {}",
+                            component,
+                            count,
+                            human_bytes::human_bytes(bytes as f64)
+                        );
+                    }
+                    if !result.excluded_paths.is_empty() {
+                        println!("  исключено по правилам: {}", result.excluded_paths.len());
+                    }
+                    for error in &result.errors {
+                        eprintln!("  ошибка: {}", error);
+                    }
+                }
+                Ok(())
+            }
+            Commands::ListPackages { json } => {
+                let manager = PackageManager::detect();
+                let entries = manager.list_installed()?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&entries)?);
+                } else {
+                    println!("Менеджер пакетов: {}", manager.list_tool());
+                    println!("Установлено пакетов: {}", entries.len());
+                    for entry in entries.iter().take(50) {
+                        println!("  {} {}", entry.name, entry.version);
+                    }
+                    if entries.len() > 50 {
+                        println!("  … и ещё {}", entries.len() - 50);
+                    }
+                }
+                Ok(())
+            }
+            Commands::ListPrinters { json } => {
+                let printers = PrinterManager::list()?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&printers)?);
+                } else {
+                    println!("Принтеров: {}", printers.len());
+                    for printer in &printers {
+                        println!(
+                            "  {} (URI: {}, общий: {})",
+                            printer.name,
+                            if printer.device_uri.is_empty() {
+                                "—"
+                            } else {
+                                printer.device_uri.as_str()
+                            },
+                            printer.shared
+                        );
+                    }
+                }
+                Ok(())
+            }
+            Commands::Config { action } => {
+                match action {
+                    ConfigAction::Path => {
+                        println!("{}", config::config_file_path().display());
+                    }
+                    ConfigAction::List => {
+                        let current = config::load_config()?;
+                        println!("Файл настроек: {}", config::config_file_path().display());
+                        println!("{}", toml::to_string_pretty(&current)?);
+                    }
+                    ConfigAction::Reset => {
+                        config::save_config(&config::AppConfig::default())?;
+                        println!(
+                            "Настройки сброшены к значениям по умолчанию: {}",
+                            config::config_file_path().display()
+                        );
+                    }
+                }
+                Ok(())
             }
         }
     }

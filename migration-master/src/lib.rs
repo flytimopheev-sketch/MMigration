@@ -11,6 +11,7 @@
 //! 5. Privileged backend (`migration-master-helper`) — минимальные root-операции по беому списку.
 
 // --- Уровень 4: инфраструктура ---
+pub mod cancel;
 pub mod database;
 pub mod error;
 pub mod logging;
