@@ -19,6 +19,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::applications::AppRule;
 use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
 use crate::backup::BackupManager;
 use crate::cancel::{CancelHandle, CancelToken};
@@ -141,6 +142,11 @@ pub enum WizardStage {
     Cancelled,
 }
 
+/// Встроенные правила приложений по умолчанию (§5).
+fn default_app_rules() -> Vec<AppRule> {
+    crate::applications::builtin_rules()
+}
+
 /// Конфигурация мастера (сериализуется в состояние, кроме секрета и токена).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WizardConfig {
@@ -175,6 +181,9 @@ pub struct WizardConfig {
     pub include_private_ssh_keys: bool,
     /// Переносить `authorized_keys` (§4)
     pub include_authorized_keys: bool,
+    /// Правила миграции настроек приложений (§5). По умолчанию — встроенные.
+    #[serde(default = "default_app_rules")]
+    pub app_rules: Vec<AppRule>,
     /// Ограничение скорости передачи, байт/с (0 — без ограничения)
     pub rate_limit: u64,
     /// Создавать резервную копию перед перезаписью (§9)
@@ -211,6 +220,7 @@ impl WizardConfig {
             skip_defaults_exclusions: false,
             include_private_ssh_keys: false,
             include_authorized_keys: false,
+            app_rules: crate::applications::builtin_rules(),
             rate_limit: 0,
             auto_backup: true,
             backup_dir: None,
@@ -324,6 +334,25 @@ pub struct ScanInventory {
     pub private_keys: Vec<String>,
     /// Разбивка по компонентам: компонент, файлов, байт
     pub by_component: Vec<(ComponentType, u64, u64)>,
+    /// Разбивка по приложениям (§5)
+    pub applications: Vec<AppBreakdown>,
+    /// Предупреждения включённых правил приложений (§5)
+    pub app_warnings: Vec<String>,
+}
+
+/// Разбивка переноса по приложениям (§5).
+#[derive(Debug, Clone, Default)]
+pub struct AppBreakdown {
+    /// Название приложения
+    pub name: String,
+    /// Количество файлов в переносе
+    pub files: u64,
+    /// Суммарный размер файлов (байт)
+    pub bytes: u64,
+    /// Включено ли правило
+    pub enabled: bool,
+    /// Требуется ли перезапуск приложения после миграции
+    pub requires_restart: bool,
 }
 
 /// План миграции для предварительного просмотра (§3).
@@ -518,7 +547,22 @@ impl MigrationWizard {
     /// Просканировать компоненты профиля (§3) с учётом исключений и SSH-политики.
     pub fn scan(&mut self) -> Result<&ScanInventory> {
         self.cancel.check()?;
-        let exclusions = self.config.effective_exclusions()?;
+        let mut exclusions = self.config.effective_exclusions()?;
+        // §5: выключенные правила приложений не переносятся — их пути исключаются.
+        for rule in self.config.app_rules.iter().filter(|rule| !rule.enabled) {
+            for path in rule.relative_paths() {
+                let path = path.trim_matches('/');
+                if path.is_empty() {
+                    continue;
+                }
+                if let Ok(pattern) = glob::Pattern::new(&format!("**/{}", path)) {
+                    exclusions.push(pattern);
+                }
+                if let Ok(pattern) = glob::Pattern::new(&format!("**/{}/**", path)) {
+                    exclusions.push(pattern);
+                }
+            }
+        }
         let mut inventory = ScanInventory::default();
 
         for component in self.config.components.clone() {
@@ -554,6 +598,11 @@ impl MigrationWizard {
         inventory.items.dedup_by(|a, b| a.source == b.source);
         inventory.total_files = inventory.items.len() as u64;
         inventory.total_size = inventory.items.iter().map(|item| item.size).sum();
+
+        // §5: разбивка по приложениям и предупреждения их правил.
+        let (applications, app_warnings) = app_breakdown(&inventory.items, &self.config.app_rules);
+        inventory.applications = applications;
+        inventory.app_warnings = app_warnings;
 
         self.stage = WizardStage::Scanned;
         self.inventory = Some(inventory);
@@ -661,6 +710,8 @@ impl MigrationWizard {
                 inventory.private_keys.join(", ")
             ));
         }
+        // §5: предупреждения правил приложений.
+        warnings.extend(inventory.app_warnings.clone());
 
         let conflicts = self.target_conflicts().unwrap_or_default();
         if !conflicts.is_empty() {
@@ -718,6 +769,37 @@ impl MigrationWizard {
         )?;
         observer.on_message(&format!("резервная копия: {}", entry.path.display()));
         Ok(Some(entry.path))
+    }
+
+    /// Выполнить post-migration hooks включённых правил (§5).
+    ///
+    /// Требует явного подтверждения (`confirmed`), каждый hook запускается без
+    /// shell-интерполяции и фиксируется в журнале операций.
+    pub fn run_app_hooks(&self, confirmed: bool) -> Result<Vec<(String, String)>> {
+        if !confirmed {
+            return Err(MigrationError::PrivilegedRequired(
+                "выполнение post-migration hooks требует подтверждения".to_string(),
+            ));
+        }
+
+        let mut results = Vec::new();
+        for rule in &self.config.app_rules {
+            if !rule.enabled || rule.post_migration_hook.is_none() {
+                continue;
+            }
+
+            self.cancel.check()?;
+            let output = crate::applications::run_hook(rule, true)?;
+            crate::log_info!(
+                "app-hook",
+                "hook приложения '{}': {}",
+                rule.app_name,
+                output.trim()
+            );
+            results.push((rule.app_name.clone(), output));
+        }
+
+        Ok(results)
     }
 
     /// Сохранить отчёт в настроенных форматах (§17).
@@ -1260,6 +1342,64 @@ fn apply_scan_warnings(inventory: &ScanInventory, report: &mut MigrationReport) 
             "приватные SSH-ключи перенесите вручную или включите явное согласие (§4)".to_string(),
         );
     }
+    // §5: предупреждения правил приложений и рекомендация о перезапуске.
+    for warning in &inventory.app_warnings {
+        report.warnings.push(warning.clone());
+    }
+    if inventory
+        .applications
+        .iter()
+        .any(|app| app.enabled && app.requires_restart && app.files > 0)
+    {
+        report.add_recommendation(
+            "перезапустите перенесённые приложения, чтобы они подхватили настройки (§5)".to_string(),
+        );
+    }
+}
+
+/// Разбивка переноса по приложениям (§5) и предупреждения включённых правил.
+fn app_breakdown(items: &[TransferItem], rules: &[AppRule]) -> (Vec<AppBreakdown>, Vec<String>) {
+    let mut breakdown = Vec::with_capacity(rules.len());
+    let mut warnings = Vec::new();
+
+    for rule in rules {
+        if !rule.enabled {
+            breakdown.push(AppBreakdown {
+                name: rule.app_name.clone(),
+                files: 0,
+                bytes: 0,
+                enabled: false,
+                requires_restart: rule.requires_restart,
+            });
+            continue;
+        }
+
+        let mut files = 0u64;
+        let mut bytes = 0u64;
+        for item in items {
+            let relative = item.relative.to_string_lossy().replace('\\', "/");
+            if rule.matches_relative(&relative) {
+                files += 1;
+                bytes += item.size;
+            }
+        }
+
+        if files > 0 {
+            for warning in &rule.warnings {
+                warnings.push(format!("{}: {}", rule.app_name, warning));
+            }
+        }
+
+        breakdown.push(AppBreakdown {
+            name: rule.app_name.clone(),
+            files,
+            bytes,
+            enabled: true,
+            requires_restart: rule.requires_restart,
+        });
+    }
+
+    (breakdown, warnings)
 }
 
 /// Записать перенесённые файлы в отчёт (с ограничением длины).
@@ -1348,6 +1488,78 @@ mod tests {
         assert_eq!(inventory.total_files, 2);
         assert!(inventory.items.iter().any(|item| item.relative == Path::new("Documents/doc.txt")));
         assert!(inventory.items.iter().any(|item| item.relative == Path::new(".ssh/config")));
+    }
+
+    #[test]
+    fn test_app_breakdown_reports_sizes() {
+        let dir = tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".config/chromium/Default")).expect("mkdir");
+        std::fs::write(home.join(".config/chromium/Default/Preferences"), b"{}").expect("write");
+
+        let mut config = base_config(dir.path(), MigrationMode::LocalArchive, &home);
+        config.components = vec![ComponentType::AppConfigs];
+
+        let mut wizard = MigrationWizard::new(config);
+        let inventory = wizard.scan().expect("scan").clone();
+
+        let chromium = inventory
+            .applications
+            .iter()
+            .find(|app| app.name.contains("Chromium"))
+            .expect("правило Chromium");
+        assert!(chromium.enabled);
+        assert_eq!(chromium.files, 1);
+        assert!(chromium.bytes > 0);
+    }
+
+    #[test]
+    fn test_disabled_app_rule_excludes_files() {
+        let dir = tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".config/libreoffice")).expect("mkdir");
+        std::fs::write(
+            home.join(".config/libreoffice/registrymodifications.xcu"),
+            b"data",
+        )
+        .expect("write");
+
+        let mut config = base_config(dir.path(), MigrationMode::LocalArchive, &home);
+        config.components = vec![ComponentType::AppConfigs];
+        for rule in config.app_rules.iter_mut() {
+            if rule.app_name == "LibreOffice" {
+                rule.enabled = false;
+            }
+        }
+
+        let mut wizard = MigrationWizard::new(config);
+        let inventory = wizard.scan().expect("scan").clone();
+
+        assert!(
+            !inventory
+                .items
+                .iter()
+                .any(|item| item.relative.to_string_lossy().contains("libreoffice")),
+            "файлы выключенного правила не должны попадать в перенос"
+        );
+        let libre = inventory
+            .applications
+            .iter()
+            .find(|app| app.name == "LibreOffice")
+            .expect("правило LibreOffice");
+        assert!(!libre.enabled);
+        assert_eq!(libre.files, 0);
+    }
+
+    #[test]
+    fn test_app_hooks_require_confirmation() {
+        let dir = tempdir().expect("tempdir");
+        let home = make_home(dir.path());
+        let config = base_config(dir.path(), MigrationMode::LocalArchive, &home);
+
+        let wizard = MigrationWizard::new(config);
+        assert!(wizard.run_app_hooks(false).is_err());
+        assert!(wizard.run_app_hooks(true).expect("hooks").is_empty());
     }
 
     #[test]

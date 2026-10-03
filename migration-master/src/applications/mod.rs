@@ -223,6 +223,18 @@ impl AppRule {
         }
         total
     }
+
+    /// Относится ли относительный путь (от HOME) к этому правилу.
+    ///
+    /// Считается совпадение самого пути (`~/.gitconfig`) и вложенных элементов
+    /// (`~/.config/chromium/Default/...`).
+    pub fn matches_relative(&self, relative: &str) -> bool {
+        let relative = relative.replace('\\', "/");
+        self.relative_paths().iter().any(|path| {
+            let path = path.trim_end_matches('/');
+            !path.is_empty() && (relative == path || relative.starts_with(&format!("{}/", path)))
+        })
+    }
 }
 
 /// Встроенные правила миграции для типовых приложений РЕД ОС (§5).
@@ -282,6 +294,37 @@ pub fn find_builtin(app_name: &str) -> Option<AppRule> {
     builtin_rules()
         .into_iter()
         .find(|rule| rule.app_name.to_lowercase().contains(&needle))
+}
+
+/// Путь к пользовательскому файлу правил миграции приложений (§5).
+pub fn default_rules_path() -> PathBuf {
+    crate::config::get_config_dir().join("app-rules.yaml")
+}
+
+/// Загрузить действующие правила: пользовательский YAML-файл или встроенные (§5).
+///
+/// Пустой или повреждённый пользовательский файл не ломает работу — берутся
+/// встроенные правила.
+pub fn load_effective_rules() -> Vec<AppRule> {
+    let path = default_rules_path();
+    if path.is_file() {
+        if let Ok(rules) = load_rules_file(&path) {
+            if !rules.is_empty() {
+                return rules;
+            }
+        }
+    }
+    builtin_rules()
+}
+
+/// Сохранить правила в пользовательский YAML-файл (§5). Возвращает путь файла.
+pub fn save_rules(rules: &[AppRule]) -> Result<PathBuf> {
+    let path = default_rules_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, export_rules_yaml(rules))?;
+    Ok(path)
 }
 
 /// Прочитать строку из YAML-значения.
@@ -598,6 +641,15 @@ Name=New
             ))
         );
         assert_eq!(parse_hook_command("   "), None);
+    }
+
+    #[test]
+    fn test_rule_matches_relative() {
+        let rule = AppRule::new("Chromium/Chrome", &[".config/chromium"], &[".cache/chromium"]);
+        assert!(rule.matches_relative(".config/chromium"));
+        assert!(rule.matches_relative(".config/chromium/Default/Preferences"));
+        assert!(!rule.matches_relative(".config/chromiumx/Preferences"));
+        assert!(!rule.matches_relative(".config/firefox"));
     }
 }
 

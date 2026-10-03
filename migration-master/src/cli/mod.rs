@@ -163,6 +163,45 @@ pub enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Правила миграции настроек приложений (§5)
+    AppRules {
+        #[command(subcommand)]
+        action: AppRulesAction,
+    },
+}
+
+/// Действия с правилами миграции приложений (§5).
+#[derive(Debug, Subcommand)]
+pub enum AppRulesAction {
+    /// Показать правила и объём данных каждого приложения
+    List {
+        /// Домашний каталог для оценки размера
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Вывести результат в формате JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Экспортировать действующие правила в YAML
+    Export {
+        /// Куда записать файл (по умолчанию — каталог настроек)
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
+    /// Импортировать правила из YAML-файла
+    Import {
+        /// Файл с правилами
+        path: PathBuf,
+    },
+    /// Выполнить post-migration hooks (требует подтверждения)
+    RunHooks {
+        /// Явное подтверждение выполнения hooks
+        #[arg(long)]
+        confirm: bool,
+        /// Домашний каталог источника
+        #[arg(long)]
+        home: Option<PathBuf>,
+    },
 }
 
 /// Действия с конфигурацией приложения.
@@ -563,6 +602,7 @@ impl Cli {
                 let mut wizard_config = WizardConfig::new(MigrationMode::SshDirect, source_home);
                 wizard_config.target_home = PathBuf::from(remote_home);
                 wizard_config.components = components;
+                wizard_config.app_rules = crate::applications::load_effective_rules();
                 wizard_config.ssh = Some(ssh);
                 wizard_config.dry_run = dry_run;
                 wizard_config.cancel = Some(crate::cancel::global());
@@ -646,6 +686,84 @@ impl Cli {
                 }
                 Ok(())
             }
+            Commands::AppRules { action } => {
+                use crate::applications;
+                match action {
+                    AppRulesAction::List { home, json } => {
+                        let home = home.unwrap_or_else(default_home);
+                        let rules = applications::load_effective_rules();
+                        if json {
+                            let entries: Vec<_> = rules
+                                .iter()
+                                .map(|rule| {
+                                    serde_json::json!({
+                                        "app_name": rule.app_name,
+                                        "enabled": rule.enabled,
+                                        "transfer_mode": rule.transfer_mode,
+                                        "requires_restart": rule.requires_restart,
+                                        "bytes": rule.size_in(&home),
+                                        "warnings": rule.warnings,
+                                        "has_hook": rule.post_migration_hook.is_some(),
+                                    })
+                                })
+                                .collect();
+                            println!("{}", serde_json::to_string_pretty(&entries)?);
+                        } else {
+                            println!("Правил приложений: {}", rules.len());
+                            for rule in &rules {
+                                let bytes = rule.size_in(&home);
+                                println!(
+                                    "  [{}] {} — {} (режим: {}{})",
+                                    if rule.enabled { "вкл" } else { "выкл" },
+                                    rule.app_name,
+                                    human_bytes::human_bytes(bytes as f64),
+                                    rule.transfer_mode,
+                                    if rule.post_migration_hook.is_some() {
+                                        ", hook"
+                                    } else {
+                                        ""
+                                    }
+                                );
+                            }
+                        }
+                        Ok(())
+                    }
+                    AppRulesAction::Export { output } => {
+                        let rules = applications::load_effective_rules();
+                        let yaml = applications::export_rules_yaml(&rules);
+                        let path = output.unwrap_or_else(applications::default_rules_path);
+                        if let Some(parent) = path.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(&path, yaml)?;
+                        println!("Правила экспортированы: {}", path.display());
+                        Ok(())
+                    }
+                    AppRulesAction::Import { path } => {
+                        let rules = applications::load_rules_file(&path)?;
+                        let saved = applications::save_rules(&rules)?;
+                        println!("Импортировано правил: {} → {}", rules.len(), saved.display());
+                        Ok(())
+                    }
+                    AppRulesAction::RunHooks { confirm, home } => {
+                        let mut wizard_config = WizardConfig::new(
+                            MigrationMode::LocalArchive,
+                            home.unwrap_or_else(default_home),
+                        );
+                        wizard_config.app_rules = applications::load_effective_rules();
+                        let wizard = MigrationWizard::new(wizard_config);
+                        let results = wizard.run_app_hooks(confirm)?;
+                        if results.is_empty() {
+                            println!("Post-migration hooks не заданы.");
+                        } else {
+                            for (app, output) in results {
+                                println!("{}: {}", app, output.trim());
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            }
         }
     }
 }
@@ -654,6 +772,7 @@ impl Cli {
 fn scan_items(home: &Path, components: &[ComponentType]) -> Result<Vec<TransferItem>> {
     let config = WizardConfig {
         components: components.to_vec(),
+        app_rules: crate::applications::load_effective_rules(),
         ..WizardConfig::new(MigrationMode::LocalArchive, home)
     };
     let mut wizard = MigrationWizard::new(config);
