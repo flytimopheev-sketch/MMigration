@@ -488,6 +488,68 @@ pub fn escape_html(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Текстовый отчёт по истории миграций (§17).
+pub fn render_history_text(records: &[crate::database::MigrationRecord]) -> String {
+    let mut out = String::new();
+    out.push_str("ОТЧЁТ ОБ ИСТОРИИ МИГРАЦИЙ\n=========================\n");
+    out.push_str(&format!("Операций: {}\n\n", records.len()));
+
+    for record in records {
+        let finished = record
+            .finished_at
+            .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "—".to_string());
+        out.push_str(&format!(
+            "{} | {:?} | {:?} | файлов: {} | байт: {} | {} -> {}\n",
+            finished,
+            record.operation_type,
+            record.status,
+            record.transferred_files,
+            record.transferred_size,
+            record.source,
+            record.target
+        ));
+    }
+    out
+}
+
+/// HTML-отчёт по истории миграций (§17).
+pub fn render_history_html(records: &[crate::database::MigrationRecord]) -> String {
+    let mut rows = String::new();
+    for record in records {
+        let finished = record
+            .finished_at
+            .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "—".to_string());
+        rows.push_str(&format!(
+            "<tr><td>{}</td><td>{:?}</td><td>{:?}</td><td>{}</td><td>{}</td><td>{} → {}</td></tr>\n",
+            escape_html(&finished),
+            record.operation_type,
+            record.status,
+            record.transferred_files,
+            record.transferred_size,
+            escape_html(&record.source),
+            escape_html(&record.target)
+        ));
+    }
+
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"ru\"><head><meta charset=\"utf-8\">\
+         <title>История миграций</title></head><body>\
+         <h1>История миграций</h1><p>Операций: {}</p>\
+         <table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">\
+         <thead><tr><th>Дата</th><th>Тип</th><th>Статус</th><th>Файлов</th><th>Байт</th>\
+         <th>Источник → Цель</th></tr></thead>\
+         <tbody>{rows}</tbody></table></body></html>\n",
+        records.len()
+    )
+}
+
+/// JSON-отчёт по истории миграций (§17).
+pub fn render_history_json(records: &[crate::database::MigrationRecord]) -> Result<String> {
+    Ok(serde_json::to_string_pretty(records)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

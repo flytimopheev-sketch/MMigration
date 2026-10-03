@@ -8,11 +8,14 @@ use clap::{Parser, Subcommand};
 use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
 use crate::config::{self, ComponentType, MigrationMode};
 use crate::conflict_resolver::ConflictStrategy;
+use crate::database::DatabaseManager;
 use crate::error::{MigrationError, Result};
 use crate::file_transfer::ProgressObserver;
 use crate::packages::PackageManager;
 use crate::printers::PrinterManager;
 use crate::profile_scanner::ProfileScanner;
+use crate::report::{render_history_html, render_history_json, render_history_text, ReportFormat};
+use crate::ssh_transfer::{SshTarget, SshTransfer};
 use crate::wizard::{MigrationWizard, WizardConfig};
 
 /// Разбор интерфейса командной строки.
@@ -120,6 +123,41 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Прямая миграция на другой компьютер по SSH
+    MigrateSsh {
+        /// Адрес вида `[user@]host[:port]`
+        target: String,
+        /// Порт (перекрывает значение из адреса)
+        #[arg(long)]
+        port: Option<u16>,
+        /// Домашний каталог-источник
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Домашний каталог на удалённом хосте
+        #[arg(long)]
+        remote_home: Option<String>,
+        /// Компоненты через запятую (default, all или список ключей)
+        #[arg(long, default_value = "default")]
+        components: String,
+        /// Файл приватного ключа SSH
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        /// Только проверка соединения и план (без передачи)
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Отчёт по истории миграций (JSON/HTML/TXT)
+    Report {
+        /// Каталог для файла отчёта (по умолчанию — каталог данных приложения)
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+        /// Формат: json|html|txt
+        #[arg(long, default_value = "txt")]
+        format: String,
+        /// Сколько последних операций включить
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Настройки приложения
     Config {
         #[command(subcommand)]
@@ -191,6 +229,41 @@ fn default_home() -> PathBuf {
         .map(PathBuf::from)
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Разобрать строку подключения `[user@]host[:port]`.
+fn parse_ssh_target(
+    spec: &str,
+    port: Option<u16>,
+    identity: Option<PathBuf>,
+) -> Result<SshTarget> {
+    let spec = spec.trim();
+    let (user, host_port) = match spec.split_once('@') {
+        Some((user, rest)) => (user.to_string(), rest.to_string()),
+        None => (String::new(), spec.to_string()),
+    };
+
+    let (host, parsed_port) = match host_port.rsplit_once(':') {
+        Some((host, value)) => match value.parse::<u16>() {
+            Ok(parsed) => (host.to_string(), parsed),
+            Err(_) => (host_port, 22),
+        },
+        None => (host_port, 22),
+    };
+
+    if host.trim().is_empty() {
+        return Err(MigrationError::InvalidInput(
+            "не задан хост для SSH-миграции".to_string(),
+        ));
+    }
+
+    Ok(SshTarget {
+        host: host.trim().to_string(),
+        user,
+        port: port.unwrap_or(parsed_port),
+        identity_file: identity,
+        known_hosts_file: None,
+    })
 }
 
 impl Cli {
@@ -445,6 +518,112 @@ impl Cli {
                         );
                     }
                 }
+                Ok(())
+            }
+            Commands::MigrateSsh {
+                target,
+                port,
+                home,
+                remote_home,
+                components,
+                identity,
+                dry_run,
+            } => {
+                let components = parse_components(&components)?;
+                let source_home = home.unwrap_or_else(default_home);
+                let ssh = parse_ssh_target(&target, port, identity)?;
+
+                println!(
+                    "Подключение: {}@{}:{}",
+                    if ssh.user.is_empty() {
+                        "<текущий пользователь>"
+                    } else {
+                        ssh.user.as_str()
+                    },
+                    ssh.host,
+                    ssh.port
+                );
+                println!("Проверьте отпечаток узла (host key) перед тем, как доверять хосту.");
+
+                let remote_home = remote_home.unwrap_or_else(|| {
+                    if ssh.user.is_empty() {
+                        "~".to_string()
+                    } else {
+                        format!("/home/{}", ssh.user)
+                    }
+                });
+
+                if dry_run {
+                    println!("[dry-run] передача не выполняется; цель: {}", remote_home);
+                } else {
+                    SshTransfer::new(ssh.clone()).check_connection()?;
+                    println!("Соединение установлено. Начинаю передачу…");
+                }
+
+                let mut wizard_config = WizardConfig::new(MigrationMode::SshDirect, source_home);
+                wizard_config.target_home = PathBuf::from(remote_home);
+                wizard_config.components = components;
+                wizard_config.ssh = Some(ssh);
+                wizard_config.dry_run = dry_run;
+                wizard_config.cancel = Some(crate::cancel::global());
+
+                let progress = ConsoleProgress::new();
+                let mut wizard = MigrationWizard::new(wizard_config);
+                let report = wizard.run(&progress)?;
+
+                println!(
+                    "Передача: файлов {}, байт {}; статус: {}",
+                    report.stats.files_copied,
+                    report.stats.bytes_copied,
+                    report.status()
+                );
+                for error in &report.errors {
+                    eprintln!("  ошибка: {}", error);
+                }
+                Ok(())
+            }
+            Commands::Report {
+                output,
+                format,
+                limit,
+            } => {
+                let current = config::load_config()?;
+                let db_path = current.database_path.clone();
+                if !db_path.exists() {
+                    println!(
+                        "История недоступна: база данных не найдена ({})",
+                        db_path.display()
+                    );
+                    return Ok(());
+                }
+
+                let database = DatabaseManager::new(db_path)?;
+                let records = database.get_migrations(limit, 0)?;
+                if records.is_empty() {
+                    println!("История операций пуста.");
+                    return Ok(());
+                }
+
+                let directory = output.unwrap_or_else(config::get_data_dir);
+                std::fs::create_dir_all(&directory)?;
+
+                let format =
+                    ReportFormat::from_key(&format).map_err(MigrationError::InvalidInput)?;
+                let (content, extension) = match format {
+                    ReportFormat::Json => (render_history_json(&records)?, "json"),
+                    ReportFormat::Html => (render_history_html(&records), "html"),
+                    _ => (render_history_text(&records), "txt"),
+                };
+
+                let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                let path = directory.join(format!("history-{stamp}.{extension}"));
+                std::fs::write(&path, content)?;
+
+                println!(
+                    "Отчёт по истории: {} операций → {}",
+                    records.len(),
+                    path.display()
+                );
                 Ok(())
             }
             Commands::Config { action } => {
