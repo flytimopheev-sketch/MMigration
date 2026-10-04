@@ -1,11 +1,11 @@
 //! Модуль базы данных для хранения истории миграций
 
-use std::path::{Path, PathBuf};
-use rusqlite::{Connection, params};
-use chrono::{DateTime, Utc, Duration};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use crate::error::{MigrationError, Result};
+use chrono::{DateTime, Duration, Utc};
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 /// Строка сохранённого SSH-хоста: `(hostname, address, port, username, trusted)`.
 pub type HostRow = (String, String, u16, String, bool);
@@ -94,7 +94,11 @@ pub struct MigrationRecord {
 }
 
 impl MigrationRecord {
-    pub fn new(operation_type: OperationType, source: impl Into<String>, target: impl Into<String>) -> Self {
+    pub fn new(
+        operation_type: OperationType,
+        source: impl Into<String>,
+        target: impl Into<String>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             started_at: Utc::now(),
@@ -128,26 +132,34 @@ impl MigrationRecord {
     pub fn mark_completed(&mut self) {
         self.finished_at = Some(Utc::now());
         self.status = MigrationStatus::Completed;
-        self.duration_secs = self.finished_at.map(|f| f.signed_duration_since(self.started_at).num_milliseconds() as f64 / 1000.0);
+        self.duration_secs = self
+            .finished_at
+            .map(|f| f.signed_duration_since(self.started_at).num_milliseconds() as f64 / 1000.0);
     }
 
     pub fn mark_failed(&mut self, error: impl Into<String>) {
         self.finished_at = Some(Utc::now());
         self.status = MigrationStatus::Failed;
         self.error_message = Some(error.into());
-        self.duration_secs = self.finished_at.map(|f| f.signed_duration_since(self.started_at).num_milliseconds() as f64 / 1000.0);
+        self.duration_secs = self
+            .finished_at
+            .map(|f| f.signed_duration_since(self.started_at).num_milliseconds() as f64 / 1000.0);
     }
 
     pub fn mark_cancelled(&mut self) {
         self.finished_at = Some(Utc::now());
         self.status = MigrationStatus::Cancelled;
-        self.duration_secs = self.finished_at.map(|f| f.signed_duration_since(self.started_at).num_milliseconds() as f64 / 1000.0);
+        self.duration_secs = self
+            .finished_at
+            .map(|f| f.signed_duration_since(self.started_at).num_milliseconds() as f64 / 1000.0);
     }
 
     pub fn mark_partially_completed(&mut self) {
         self.finished_at = Some(Utc::now());
         self.status = MigrationStatus::PartiallyCompleted;
-        self.duration_secs = self.finished_at.map(|f| f.signed_duration_since(self.started_at).num_milliseconds() as f64 / 1000.0);
+        self.duration_secs = self
+            .finished_at
+            .map(|f| f.signed_duration_since(self.started_at).num_milliseconds() as f64 / 1000.0);
     }
 }
 
@@ -161,14 +173,14 @@ impl DatabaseManager {
     /// Создание нового менеджера БД
     pub fn new(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_path = db_path.as_ref().to_path_buf();
-        
+
         // Создаём директорию если нужно
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         let conn = Connection::open(&db_path)?;
-        
+
         let mut manager = Self { db_path, conn };
         manager.init_schema()?;
 
@@ -342,23 +354,41 @@ impl DatabaseManager {
 
     /// Получение записи по ID
     pub fn get_migration(&self, id: &str) -> Result<Option<MigrationRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT * FROM migrations WHERE id = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM migrations WHERE id = ?1")?;
 
         let row = stmt.query_row(params![id], |row| {
             Ok(MigrationRecord {
                 id: row.get("id")?,
                 started_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("started_at")?)
                     .map(|d| d.with_timezone(&Utc))
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?,
-                finished_at: row.get::<_, Option<String>>("finished_at")?
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?,
+                finished_at: row
+                    .get::<_, Option<String>>("finished_at")?
                     .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                     .map(|d| d.with_timezone(&Utc)),
                 operation_type: serde_json::from_str(&row.get::<_, String>("operation_type")?)
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?,
-                status: serde_json::from_str(&row.get::<_, String>("status")?)
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?,
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?,
+                status: serde_json::from_str(&row.get::<_, String>("status")?).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?,
                 source: row.get("source")?,
                 target: row.get("target")?,
                 username: row.get("username")?,
@@ -387,27 +417,53 @@ impl DatabaseManager {
 
     /// Получение истории миграций
     pub fn get_migrations(&self, limit: usize, offset: usize) -> Result<Vec<MigrationRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT * FROM migrations ORDER BY started_at DESC LIMIT ?1 OFFSET ?2"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM migrations ORDER BY started_at DESC LIMIT ?1 OFFSET ?2")?;
 
         let rows = stmt.query_map(params![limit, offset], |row| {
             let started_at_str: String = row.get("started_at")?;
             let started_at = DateTime::parse_from_rfc3339(&started_at_str)
                 .map(|d| d.with_timezone(&Utc))
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e.to_string(),
+                        )),
+                    )
+                })?;
 
-            let finished_at = row.get::<_, Option<String>>("finished_at")?
+            let finished_at = row
+                .get::<_, Option<String>>("finished_at")?
                 .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                 .map(|d| d.with_timezone(&Utc));
 
             let operation_type_str: String = row.get("operation_type")?;
-            let operation_type = serde_json::from_str(&operation_type_str)
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+            let operation_type = serde_json::from_str(&operation_type_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    )),
+                )
+            })?;
 
             let status_str: String = row.get("status")?;
-            let status = serde_json::from_str(&status_str)
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+            let status = serde_json::from_str(&status_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    )),
+                )
+            })?;
 
             Ok(MigrationRecord {
                 id: row.get("id")?,
@@ -447,26 +503,52 @@ impl DatabaseManager {
         let mut stmt = self.conn.prepare(
             "SELECT * FROM migrations 
              WHERE started_at >= ?1 AND started_at <= ?2 
-             ORDER BY started_at DESC"
+             ORDER BY started_at DESC",
         )?;
 
         let rows = stmt.query_map(params![start.to_rfc3339(), end.to_rfc3339()], |row| {
             let started_at_str: String = row.get("started_at")?;
             let started_at = DateTime::parse_from_rfc3339(&started_at_str)
                 .map(|d| d.with_timezone(&Utc))
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e.to_string(),
+                        )),
+                    )
+                })?;
 
-            let finished_at = row.get::<_, Option<String>>("finished_at")?
+            let finished_at = row
+                .get::<_, Option<String>>("finished_at")?
                 .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                 .map(|d| d.with_timezone(&Utc));
 
             let operation_type_str: String = row.get("operation_type")?;
-            let operation_type = serde_json::from_str(&operation_type_str)
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+            let operation_type = serde_json::from_str(&operation_type_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    )),
+                )
+            })?;
 
             let status_str: String = row.get("status")?;
-            let status = serde_json::from_str(&status_str)
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))))?;
+            let status = serde_json::from_str(&status_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    )),
+                )
+            })?;
 
             Ok(MigrationRecord {
                 id: row.get("id")?,
@@ -500,9 +582,9 @@ impl DatabaseManager {
     /// Удаление старых записей
     pub fn cleanup_old_records(&mut self, days: u32) -> Result<usize> {
         let cutoff = Utc::now() - Duration::days(days as i64);
-        
+
         let tx = self.conn.transaction()?;
-        
+
         // Удаляем связанные записи сначала
         tx.execute(
             "DELETE FROM migration_items WHERE migration_id IN (
@@ -531,7 +613,7 @@ impl DatabaseManager {
         )?;
 
         tx.commit()?;
-        
+
         Ok(deleted)
     }
 
@@ -553,7 +635,11 @@ impl DatabaseManager {
     }
 
     /// Обновление времени последнего подключения к хосту
-    pub fn update_host_connection(&mut self, hostname: &str, fingerprint: Option<&str>) -> Result<()> {
+    pub fn update_host_connection(
+        &mut self,
+        hostname: &str,
+        fingerprint: Option<&str>,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE hosts SET last_connected = ?1, fingerprint = ?2, trusted = TRUE
              WHERE hostname = ?3",
@@ -596,13 +682,11 @@ impl DatabaseManager {
 
     /// Получение настройки
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT value FROM settings WHERE key = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")?;
 
-        let result = stmt.query_row(params![key], |row| {
-            row.get::<_, String>("value")
-        });
+        let result = stmt.query_row(params![key], |row| row.get::<_, String>("value"));
 
         match result {
             Ok(val) => Ok(Some(val)),

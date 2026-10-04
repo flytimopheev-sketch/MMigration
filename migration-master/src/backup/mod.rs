@@ -353,7 +353,6 @@ impl BackupManager {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,4 +481,3 @@ mod tests {
         assert!(BackupManager::read_manifest(&broken).is_err());
     }
 }
-

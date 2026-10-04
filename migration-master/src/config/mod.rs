@@ -251,9 +251,11 @@ impl ComponentType {
             | Self::Themes
             | Self::Icons
             | Self::Fonts => RiskLevel::Medium,
-            Self::SshKeys | Self::Printers | Self::Packages | Self::CronJobs | Self::UserServices => {
-                RiskLevel::High
-            }
+            Self::SshKeys
+            | Self::Printers
+            | Self::Packages
+            | Self::CronJobs
+            | Self::UserServices => RiskLevel::High,
             Self::SystemSettings => RiskLevel::Critical,
         }
     }
@@ -351,7 +353,9 @@ impl ComponentType {
             Self::SshKeys => vec![home.join(".ssh")],
             Self::Printers => vec![home.join(".cups")],
             Self::Packages => vec![home.join(".local/share/migration-master/package-list.json")],
-            Self::SystemSettings => vec![home.join(".config/migration-master/system-settings.json")],
+            Self::SystemSettings => {
+                vec![home.join(".config/migration-master/system-settings.json")]
+            }
             Self::CronJobs => vec![home.join(".config/migration-master/crontab.txt")],
             Self::UserServices => vec![home.join(".config/systemd/user")],
         }
@@ -480,7 +484,7 @@ pub fn config_file_path() -> PathBuf {
 /// Загрузка конфигурации из указанного файла
 pub fn load_config_from(path: impl AsRef<Path>) -> crate::error::Result<AppConfig> {
     let config_path = path.as_ref().to_path_buf();
-    
+
     if config_path.exists() {
         let content = std::fs::read_to_string(config_path)?;
         let config: AppConfig = toml::from_str(&content)?;
@@ -503,10 +507,10 @@ pub fn save_config_to(path: impl AsRef<Path>, config: &AppConfig) -> crate::erro
         .map(|p| p.to_path_buf())
         .unwrap_or_else(get_config_dir);
     std::fs::create_dir_all(&config_dir)?;
-    
+
     let content = toml::to_string_pretty(config)?;
     std::fs::write(config_path, content)?;
-    
+
     Ok(())
 }
 
@@ -559,7 +563,10 @@ mod tests {
             ComponentType::from_key("cups"),
             Some(ComponentType::Printers)
         );
-        assert_eq!(ComponentType::from_key("rpm"), Some(ComponentType::Packages));
+        assert_eq!(
+            ComponentType::from_key("rpm"),
+            Some(ComponentType::Packages)
+        );
     }
 
     #[test]
@@ -645,10 +652,9 @@ mod tests {
     /// Пример конфигурации из `resources/examples` должен оставаться валидным.
     #[test]
     fn test_example_config_is_valid() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/examples/config.toml");
-        let example = load_config_from(&path)
-            .expect("resources/examples/config.toml должен разбираться");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/examples/config.toml");
+        let example =
+            load_config_from(&path).expect("resources/examples/config.toml должен разбираться");
         let defaults = AppConfig::default();
         assert_eq!(example.language, defaults.language);
         assert_eq!(example.theme, defaults.theme);
@@ -657,4 +663,3 @@ mod tests {
         assert!(example.history_days > 0);
     }
 }
-

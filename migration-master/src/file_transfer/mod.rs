@@ -174,8 +174,8 @@ pub fn copy_file(
     options: &CopyOptions,
     limiter: &mut RateLimiter,
 ) -> Result<u64> {
-    let metadata = std::fs::metadata(source)
-        .map_err(|_| crate::error::MigrationError::not_found(source))?;
+    let metadata =
+        std::fs::metadata(source).map_err(|_| crate::error::MigrationError::not_found(source))?;
 
     if options.dry_run {
         return Ok(metadata.len());
@@ -186,12 +186,8 @@ pub fn copy_file(
     }
 
     let temp = temp_path_for(destination);
-    let mut reader = std::io::BufReader::with_capacity(
-        128 * 1024,
-        std::fs::File::open(source)?,
-    );
-    let mut writer =
-        std::io::BufWriter::with_capacity(128 * 1024, std::fs::File::create(&temp)?);
+    let mut reader = std::io::BufReader::with_capacity(128 * 1024, std::fs::File::open(source)?);
+    let mut writer = std::io::BufWriter::with_capacity(128 * 1024, std::fs::File::create(&temp)?);
 
     let mut buffer = vec![0u8; 128 * 1024];
     let mut written = 0u64;
@@ -268,7 +264,6 @@ pub fn remove_path(path: &Path) -> Result<()> {
 
     Ok(())
 }
-
 
 /// Проверить наличие свободного места на целевом диске.
 pub fn ensure_space(target_root: &Path, required: u64) -> Result<()> {
@@ -416,10 +411,7 @@ pub fn hash_paths_parallel(
 }
 
 /// Проверить контрольные суммы файлов после восстановления.
-pub fn verify_items(
-    items: &[TransferItem],
-    target_root: &Path,
-) -> Result<CopyStats> {
+pub fn verify_items(items: &[TransferItem], target_root: &Path) -> Result<CopyStats> {
     let mut stats = CopyStats::default();
 
     for item in items {
@@ -435,8 +427,12 @@ pub fn verify_items(
             continue;
         }
 
-        let source_size = std::fs::metadata(&item.source).map(|m| m.len()).unwrap_or(0);
-        let dest_size = std::fs::metadata(&destination).map(|m| m.len()).unwrap_or(0);
+        let source_size = std::fs::metadata(&item.source)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let dest_size = std::fs::metadata(&destination)
+            .map(|m| m.len())
+            .unwrap_or(0);
 
         if source_size != dest_size {
             stats.errors.push(format!(
@@ -453,7 +449,6 @@ pub fn verify_items(
 
     Ok(stats)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -582,7 +577,11 @@ mod tests {
         write_file(&source, b"data");
         write_file(&target_dir.join("existing.txt"), b"old");
 
-        let items = vec![TransferItem::file(&source, PathBuf::from("existing.txt"), 4)];
+        let items = vec![TransferItem::file(
+            &source,
+            PathBuf::from("existing.txt"),
+            4,
+        )];
         let stats =
             copy_items(&items, &target_dir, &CopyOptions::default(), &NoProgress).expect("copy");
 
@@ -602,7 +601,11 @@ mod tests {
         write_file(&source, b"data");
         std::fs::create_dir_all(&target_dir).expect("mkdir");
 
-        let items = vec![TransferItem::file(&source, PathBuf::from("../escaped.txt"), 4)];
+        let items = vec![TransferItem::file(
+            &source,
+            PathBuf::from("../escaped.txt"),
+            4,
+        )];
         let result = copy_items(&items, &target_dir, &CopyOptions::default(), &NoProgress);
 
         assert!(result.is_err());
@@ -645,4 +648,3 @@ mod tests {
         assert_eq!(stats.verified, 0);
     }
 }
-

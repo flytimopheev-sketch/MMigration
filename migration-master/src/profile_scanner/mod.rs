@@ -1,12 +1,12 @@
 //! Модуль сканирования пользовательского профиля
 
-use std::path::{Path, PathBuf};
-use std::fs;
-use walkdir::WalkDir;
-use serde::{Deserialize, Serialize};
 use crate::config::{ComponentType, DEFAULT_EXCLUSIONS};
 use crate::error::{MigrationError, Result};
 use glob::Pattern;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
 /// Информация о файле
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,10 +80,12 @@ impl ProfileScanner {
     /// Создание нового сканера
     pub fn new() -> Result<Self> {
         let username = whoami::username();
-        let home_dir = std::env::var("HOME")
-            .map(PathBuf::from)
-            .or_else(|_| dirs::home_dir().ok_or(MigrationError::FileNotFound("Домашняя директория не найдена".into())))?;
-        
+        let home_dir = std::env::var("HOME").map(PathBuf::from).or_else(|_| {
+            dirs::home_dir().ok_or(MigrationError::FileNotFound(
+                "Домашняя директория не найдена".into(),
+            ))
+        })?;
+
         // Получаем UID/GID из метаданных
         #[cfg(unix)]
         let (uid, gid) = {
@@ -91,7 +93,7 @@ impl ProfileScanner {
             let metadata = fs::metadata(&home_dir)?;
             (metadata.uid(), metadata.gid())
         };
-        
+
         #[cfg(not(unix))]
         let (uid, gid) = (1000, 1000);
 
@@ -136,13 +138,15 @@ impl ProfileScanner {
         let mut excluded_paths = Vec::new();
         let mut errors = Vec::new();
         let mut total_size = 0u64;
-        let mut files_by_component: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut size_by_component: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        let mut files_by_component: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut size_by_component: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
 
         // Сканируем каждый компонент
         for &component in &self.components {
             let paths = self.get_component_paths(component);
-            
+
             for path in paths {
                 if !path.exists() {
                     continue;
@@ -168,7 +172,7 @@ impl ProfileScanner {
                                 *files_by_component.entry(comp_name.clone()).or_insert(0) += 1;
                                 *size_by_component.entry(comp_name).or_insert(0) += file.size;
                             }
-                            
+
                             files.push(file);
                         }
                     }
@@ -198,20 +202,44 @@ impl ProfileScanner {
     /// Получение путей для компонента
     fn get_component_paths(&self, component: ComponentType) -> Vec<PathBuf> {
         match component {
-            ComponentType::Desktop => vec![self.home_dir.join("Desktop"), self.home_dir.join("Рабочий стол")],
-            ComponentType::Documents => vec![self.home_dir.join("Documents"), self.home_dir.join("Документы")],
-            ComponentType::Downloads => vec![self.home_dir.join("Downloads"), self.home_dir.join("Загрузки")],
-            ComponentType::Pictures => vec![self.home_dir.join("Pictures"), self.home_dir.join("Изображения")],
-            ComponentType::Videos => vec![self.home_dir.join("Videos"), self.home_dir.join("Видео")],
+            ComponentType::Desktop => vec![
+                self.home_dir.join("Desktop"),
+                self.home_dir.join("Рабочий стол"),
+            ],
+            ComponentType::Documents => vec![
+                self.home_dir.join("Documents"),
+                self.home_dir.join("Документы"),
+            ],
+            ComponentType::Downloads => vec![
+                self.home_dir.join("Downloads"),
+                self.home_dir.join("Загрузки"),
+            ],
+            ComponentType::Pictures => vec![
+                self.home_dir.join("Pictures"),
+                self.home_dir.join("Изображения"),
+            ],
+            ComponentType::Videos => {
+                vec![self.home_dir.join("Videos"), self.home_dir.join("Видео")]
+            }
             ComponentType::Music => vec![self.home_dir.join("Music"), self.home_dir.join("Музыка")],
-            ComponentType::Templates => vec![self.home_dir.join("Templates"), self.home_dir.join("Шаблоны")],
+            ComponentType::Templates => vec![
+                self.home_dir.join("Templates"),
+                self.home_dir.join("Шаблоны"),
+            ],
             ComponentType::AppConfigs => vec![self.home_dir.join(".config")],
             ComponentType::AppData => vec![self.home_dir.join(".local").join("share")],
             ComponentType::LocalBin => vec![self.home_dir.join(".local").join("bin")],
-            ComponentType::LocalApps => vec![self.home_dir.join(".local").join("share").join("applications")],
+            ComponentType::LocalApps => vec![self
+                .home_dir
+                .join(".local")
+                .join("share")
+                .join("applications")],
             ComponentType::Themes => vec![self.home_dir.join(".themes")],
             ComponentType::Icons => vec![self.home_dir.join(".icons")],
-            ComponentType::Fonts => vec![self.home_dir.join(".fonts"), self.home_dir.join(".local").join("share").join("fonts")],
+            ComponentType::Fonts => vec![
+                self.home_dir.join(".fonts"),
+                self.home_dir.join(".local").join("share").join("fonts"),
+            ],
             ComponentType::SshKeys => vec![self.home_dir.join(".ssh")],
             _ => vec![],
         }
@@ -220,7 +248,7 @@ impl ProfileScanner {
     /// Сканирование директории
     fn scan_directory(&self, dir: &Path, component: ComponentType) -> Result<Vec<FileInfo>> {
         let mut files = Vec::new();
-        
+
         if !dir.exists() {
             return Ok(files);
         }
@@ -266,7 +294,8 @@ impl ProfileScanner {
             };
 
             let path = entry.path().to_path_buf();
-            let relative_path = path.strip_prefix(&self.home_dir)
+            let relative_path = path
+                .strip_prefix(&self.home_dir)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| path.to_string_lossy().to_string());
 
@@ -278,14 +307,19 @@ impl ProfileScanner {
             #[cfg(unix)]
             let (uid, gid, mode) = {
                 use std::os::unix::fs::MetadataExt;
-                (Some(metadata.uid()), Some(metadata.gid()), Some(metadata.mode()))
+                (
+                    Some(metadata.uid()),
+                    Some(metadata.gid()),
+                    Some(metadata.mode()),
+                )
             };
-            
+
             #[cfg(not(unix))]
             let (uid, gid, mode) = (None, None, None);
 
             let size = if metadata.is_dir() { 0 } else { metadata.len() };
-            let modified = metadata.modified()
+            let modified = metadata
+                .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs());
@@ -389,7 +423,7 @@ mod tests {
         // Тест с временной директорией
         let mut scanner = ProfileScanner::new().unwrap();
         scanner.home_dir = dir.path().to_path_buf();
-        
+
         let result = scanner.quick_estimate();
         assert!(result.is_ok());
     }

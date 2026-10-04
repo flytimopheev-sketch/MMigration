@@ -8,7 +8,9 @@ fn main() {
     let cli = Cli::parse();
 
     // Логирование в файл (не фатально, если каталог недоступен)
-    let log_path = config::get_data_dir().join("logs").join("migration-master.log");
+    let log_path = config::get_data_dir()
+        .join("logs")
+        .join("migration-master.log");
     let _ = logging::init_logger(&log_path, 10);
     let _ = platform::hostname();
 

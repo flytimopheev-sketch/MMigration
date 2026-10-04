@@ -195,7 +195,6 @@ pub fn generate_password(length: usize) -> String {
     password
 }
 
-
 /// Преобразование пароля в секретный тип age.
 fn secret(password: &str) -> age::secrecy::SecretString {
     age::secrecy::SecretString::from(password.to_string())
@@ -268,12 +267,9 @@ pub fn encrypt_data(data: &[u8], password: &str) -> Result<Vec<u8>> {
 /// Расшифрование данных в памяти.
 pub fn decrypt_data(encrypted_data: &[u8], password: &str) -> Result<Vec<u8>> {
     let identity = age::scrypt::Identity::new(secret(password));
-    age::decrypt(&identity, encrypted_data).map_err(|e| {
-        MigrationError::Decryption(format!("не удалось расшифровать данные: {}", e))
-    })
+    age::decrypt(&identity, encrypted_data)
+        .map_err(|e| MigrationError::Decryption(format!("не удалось расшифровать данные: {}", e)))
 }
-
-
 
 /// Лексическая нормализация пути без обращения к файловой системе.
 /// Убирает `.` и разрешает `..` только внутри пути.
@@ -582,4 +578,3 @@ mod tests {
         assert_eq!(platform::file_mode(&file).map(|m| m & 0o777), Some(0o600));
     }
 }
-

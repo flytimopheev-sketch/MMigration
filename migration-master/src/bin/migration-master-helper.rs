@@ -32,7 +32,10 @@ enum HelperCommand {
     /// Установить файл политики PolicyKit
     InstallPolicy { path: PathBuf },
     /// Скопировать системный файл или каталог (белый список источников)
-    CopySystem { source: PathBuf, destination: PathBuf },
+    CopySystem {
+        source: PathBuf,
+        destination: PathBuf,
+    },
     /// Установить права (только для системных путей)
     SetMode { path: PathBuf, mode: u32 },
 }
@@ -151,11 +154,7 @@ fn require_prefix(path: &Path, prefixes: &[&str], what: &str) -> Result<(), Stri
     if prefixes.iter().any(|prefix| text.starts_with(prefix)) {
         Ok(())
     } else {
-        Err(format!(
-            "{} вне белого списка: {}",
-            what,
-            path.display()
-        ))
+        Err(format!("{} вне белого списка: {}", what, path.display()))
     }
 }
 

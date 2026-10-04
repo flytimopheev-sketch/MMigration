@@ -225,4 +225,3 @@ mod tests {
         assert!(MigrationError::Cancelled.is_cancelled());
     }
 }
-

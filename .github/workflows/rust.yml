@@ -16,7 +16,25 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Build
+
+    # Проект лежит в подкаталоге migration-master/ — Cargo.toml в корне нет.
+    - name: Проверка форматирования
+      working-directory: migration-master
+      run: cargo fmt --all -- --check
+
+    - name: Clippy
+      working-directory: migration-master
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Build (CLI)
+      working-directory: migration-master
       run: cargo build --verbose
-    - name: Run tests
+
+    - name: Run tests (CLI)
+      working-directory: migration-master
       run: cargo test --verbose
+
+    # GUI собирается только на Linux с фичей `gui`.
+    - name: Build (GUI, feature gui)
+      working-directory: migration-master
+      run: cargo build --verbose --features gui

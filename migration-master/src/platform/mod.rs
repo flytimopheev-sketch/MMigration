@@ -291,7 +291,6 @@ pub fn symlink_target(path: &Path) -> Option<PathBuf> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,4 +354,3 @@ mod tests {
         assert!(gid.is_some());
     }
 }
-

@@ -273,11 +273,7 @@ fn default_home() -> PathBuf {
 }
 
 /// Разобрать строку подключения `[user@]host[:port]`.
-fn parse_ssh_target(
-    spec: &str,
-    port: Option<u16>,
-    identity: Option<PathBuf>,
-) -> Result<SshTarget> {
+fn parse_ssh_target(spec: &str, port: Option<u16>, identity: Option<PathBuf>) -> Result<SshTarget> {
     let spec = spec.trim();
     let (user, host_port) = match spec.split_once('@') {
         Some((user, rest)) => (user.to_string(), rest.to_string()),
@@ -331,7 +327,11 @@ impl Cli {
                 );
                 println!(
                     "Зашифрован: {}",
-                    if info.manifest.encrypted { "да" } else { "нет" }
+                    if info.manifest.encrypted {
+                        "да"
+                    } else {
+                        "нет"
+                    }
                 );
                 println!(
                     "Файлов: {} ({} байт); размер архива: {} байт",
@@ -413,7 +413,9 @@ impl Cli {
 
                 println!(
                     "Восстановлено: {} ({} байт); пропущено: {}; проверено хешей: {}",
-                    result.restored_files, result.restored_bytes, result.skipped_files,
+                    result.restored_files,
+                    result.restored_bytes,
+                    result.skipped_files,
                     result.verified_files
                 );
                 for conflict in &result.conflicts {
@@ -507,7 +509,11 @@ impl Cli {
                     let mut components: Vec<_> = result.files_by_component.iter().collect();
                     components.sort_by(|a, b| a.0.cmp(b.0));
                     for (component, count) in components {
-                        let bytes = result.size_by_component.get(component).copied().unwrap_or(0);
+                        let bytes = result
+                            .size_by_component
+                            .get(component)
+                            .copied()
+                            .unwrap_or(0);
                         println!(
                             "  {}: {} файлов, {}",
                             component,
@@ -745,7 +751,11 @@ impl Cli {
                     AppRulesAction::Import { path } => {
                         let rules = applications::load_rules_file(&path)?;
                         let saved = applications::save_rules(&rules)?;
-                        println!("Импортировано правил: {} → {}", rules.len(), saved.display());
+                        println!(
+                            "Импортировано правил: {} → {}",
+                            rules.len(),
+                            saved.display()
+                        );
                         Ok(())
                     }
                     AppRulesAction::RunHooks { confirm, home } => {

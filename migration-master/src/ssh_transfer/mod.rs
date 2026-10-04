@@ -220,14 +220,16 @@ impl SshTransfer {
     }
 }
 
-
 impl SshTransfer {
     /// Оценить объём локального пути (для отчёта).
     fn estimate_local(path: &Path) -> (u64, u64) {
         let mut files = 0u64;
         let mut bytes = 0u64;
 
-        for entry in walkdir::WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if entry.file_type().is_file() {
                 files += 1;
                 bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -353,7 +355,6 @@ fn which_available(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,4 +414,3 @@ mod tests {
         assert_eq!(back.port, 22);
     }
 }
-

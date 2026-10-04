@@ -348,7 +348,6 @@ pub fn ensure_conflict_path_inside(root: &Path, path: &Path) -> Result<()> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,7 +357,12 @@ mod tests {
         TransferItem::file(source, PathBuf::from(relative), size)
     }
 
-    fn conflict(relative: &str, kind: ConflictKind, source_size: u64, target_size: u64) -> ConflictInfo {
+    fn conflict(
+        relative: &str,
+        kind: ConflictKind,
+        source_size: u64,
+        target_size: u64,
+    ) -> ConflictInfo {
         ConflictInfo {
             target_path: PathBuf::from("/tmp").join(relative),
             relative_path: PathBuf::from(relative),
@@ -535,4 +539,3 @@ mod tests {
         assert_eq!(ConflictKind::Different.description(), "файлы различаются");
     }
 }
-

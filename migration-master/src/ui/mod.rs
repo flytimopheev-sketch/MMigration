@@ -37,4 +37,3 @@ pub fn run_gui() -> Result<()> {
         ))
     }
 }
-

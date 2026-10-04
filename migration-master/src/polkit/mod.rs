@@ -115,7 +115,9 @@ mod tests {
         assert!(!PolkitManager::is_action_allowed(
             "com.redos.migration-master.helper.fmt-disk"
         ));
-        assert!(!PolkitManager::is_action_allowed("org.freedesktop.policykit.exec"));
+        assert!(!PolkitManager::is_action_allowed(
+            "org.freedesktop.policykit.exec"
+        ));
 
         let unique: std::collections::HashSet<_> = ALLOWED_ACTIONS.iter().collect();
         assert_eq!(unique.len(), ALLOWED_ACTIONS.len());
@@ -192,4 +194,3 @@ mod tests {
         }
     }
 }
-

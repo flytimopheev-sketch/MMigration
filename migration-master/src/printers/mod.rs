@@ -60,7 +60,9 @@ impl PrinterManager {
             let relative = source
                 .strip_prefix(home)
                 .map(|path| path.to_path_buf())
-                .unwrap_or_else(|_| PathBuf::from(source.to_string_lossy().trim_start_matches('/')));
+                .unwrap_or_else(|_| {
+                    PathBuf::from(source.to_string_lossy().trim_start_matches('/'))
+                });
             let target = destination.join(&relative);
 
             if source.is_dir() {
@@ -176,4 +178,3 @@ mod tests {
         assert!(commands[0].contains(&"HP".to_string()));
     }
 }
-

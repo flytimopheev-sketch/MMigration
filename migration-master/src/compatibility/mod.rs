@@ -105,8 +105,8 @@ pub fn check_against(
             ));
         }
 
-        report.os_compatible =
-            report.source_os.id == report.target_os.id || compatible_family(&report.source_os, &report.target_os);
+        report.os_compatible = report.source_os.id == report.target_os.id
+            || compatible_family(&report.source_os, &report.target_os);
 
         if !report.os_compatible {
             report.warnings.push(format!(
@@ -149,7 +149,10 @@ fn arch_compatible(source: &str, target: &str) -> bool {
     )
 }
 
-fn compatible_family(source: &crate::platform::OsRelease, target: &crate::platform::OsRelease) -> bool {
+fn compatible_family(
+    source: &crate::platform::OsRelease,
+    target: &crate::platform::OsRelease,
+) -> bool {
     let family = |release: &crate::platform::OsRelease| -> &'static str {
         let id = release.id.to_lowercase().replace([' ', '-'], "");
         if ["redos", "rhel", "centos", "fedora", "ol"]
@@ -243,4 +246,3 @@ mod tests {
         assert!(report.warnings.iter().any(|w| w.contains("старше")));
     }
 }
-

@@ -1,11 +1,11 @@
 //! Модуль логирования операций
 
-use std::path::{Path, PathBuf};
-use std::fs::{File, OpenOptions};
-use std::io::{Write, BufWriter};
+use crate::error::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::error::Result;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 /// Уровни логирования
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,10 +65,12 @@ impl LogEntry {
 
     pub fn format(&self) -> String {
         let timestamp = self.timestamp.format("%Y-%m-%d %H:%M:%S%.3f");
-        let data_str = self.data.as_ref()
+        let data_str = self
+            .data
+            .as_ref()
             .map(|d| format!(" | {}", d))
             .unwrap_or_default();
-        
+
         format!(
             "[{}] [{}] [{}] {}{}",
             timestamp,
@@ -91,7 +93,7 @@ impl LogManager {
     /// Создание нового менеджера журнала
     pub fn new(log_path: impl AsRef<Path>, max_size_mb: u64) -> Result<Self> {
         let log_path = log_path.as_ref().to_path_buf();
-        
+
         // Создаём директорию если нужно
         if let Some(parent) = log_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -107,7 +109,7 @@ impl LogManager {
 
         // Проверяем размер и ротируем если нужно
         manager.rotate_if_needed()?;
-        
+
         Ok(manager)
     }
 
@@ -129,22 +131,24 @@ impl LogManager {
     fn rotate(&mut self) -> Result<()> {
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
         let rotated_path = self.log_path.with_extension(format!("{}.log", timestamp));
-        
+
         std::fs::rename(&self.log_path, &rotated_path)?;
-        
+
         // Удаляем старые логи (оставляем последние 5)
         self.cleanup_old_logs()?;
-        
+
         Ok(())
     }
 
     /// Очистка старых логов
     fn cleanup_old_logs(&self) -> Result<()> {
         if let Some(parent) = self.log_path.parent() {
-            let pattern = self.log_path.file_stem()
+            let pattern = self
+                .log_path
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("migration");
-            
+
             let mut log_files: Vec<_> = std::fs::read_dir(parent)?
                 .filter_map(|e| e.ok())
                 .filter(|e| {
@@ -209,7 +213,11 @@ impl LogManager {
     }
 
     /// Логирование предупреждения
-    pub fn warning(&mut self, category: impl Into<String>, message: impl Into<String>) -> Result<()> {
+    pub fn warning(
+        &mut self,
+        category: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Result<()> {
         self.log(LogEntry::new(LogLevel::Warning, category, message))
     }
 
@@ -242,7 +250,7 @@ impl LogManager {
             .take(lines)
             .map(|s| s.to_string())
             .collect();
-        
+
         Ok(lines.into_iter().rev().collect())
     }
 
@@ -269,9 +277,9 @@ impl Drop for LogManager {
     }
 }
 
+use once_cell::sync::Lazy;
 /// Глобальный экземпляр логгера (ленивая инициализация)
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
 
 static GLOBAL_LOGGER: Lazy<Mutex<Option<LogManager>>> = Lazy::new(|| Mutex::new(None));
 

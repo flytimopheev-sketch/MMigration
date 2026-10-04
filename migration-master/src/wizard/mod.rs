@@ -90,7 +90,10 @@ impl WizardStep {
 
     /// Номер этапа (0 — первый).
     pub fn index(self) -> usize {
-        Self::all().into_iter().position(|step| step == self).unwrap_or(0)
+        Self::all()
+            .into_iter()
+            .position(|step| step == self)
+            .unwrap_or(0)
     }
 
     /// Название этапа для интерфейса.
@@ -235,7 +238,11 @@ impl WizardConfig {
     pub fn effective_exclusions(&self) -> Result<Vec<glob::Pattern>> {
         let mut patterns: Vec<String> = Vec::new();
         if !self.skip_defaults_exclusions {
-            patterns.extend(config::DEFAULT_EXCLUSIONS.iter().map(|item| item.to_string()));
+            patterns.extend(
+                config::DEFAULT_EXCLUSIONS
+                    .iter()
+                    .map(|item| item.to_string()),
+            );
         }
         patterns.extend(
             self.exclusions
@@ -499,7 +506,10 @@ impl MigrationWizard {
             step: self.step,
             stage: self.stage,
             config: self.config.clone(),
-            status: self.report.as_ref().map(|report| report.status().to_string()),
+            status: self
+                .report
+                .as_ref()
+                .map(|report| report.status().to_string()),
             report_id: self.report.as_ref().map(|report| report.id.clone()),
             report_paths: self.report_paths.clone(),
             saved_at: chrono::Utc::now().to_rfc3339(),
@@ -525,7 +535,9 @@ impl MigrationWizard {
 
     /// Продолжить работу из состояния в каталоге конфигурации.
     pub fn load_default_state() -> Result<Self> {
-        Ok(Self::restore_state(WizardState::load(&Self::default_state_path())?))
+        Ok(Self::restore_state(WizardState::load(
+            &Self::default_state_path(),
+        )?))
     }
 
     /// Каталог отчётов (из конфигурации или каталог данных приложения).
@@ -574,7 +586,9 @@ impl MigrationWizard {
                 if let Err(error) =
                     collect_items(&root, &self.config.source_home, &exclusions, &mut inventory)
                 {
-                    inventory.errors.push(format!("{}: {}", root.display(), error));
+                    inventory
+                        .errors
+                        .push(format!("{}: {}", root.display(), error));
                 }
             }
 
@@ -702,7 +716,10 @@ impl MigrationWizard {
             ));
         }
         if !inventory.excluded.is_empty() {
-            warnings.push(format!("исключено по правилам: {} файлов", inventory.excluded.len()));
+            warnings.push(format!(
+                "исключено по правилам: {} файлов",
+                inventory.excluded.len()
+            ));
         }
         if self.config.include_private_ssh_keys && !inventory.private_keys.is_empty() {
             warnings.push(format!(
@@ -756,7 +773,8 @@ impl MigrationWizard {
         }
 
         if existing.is_empty() {
-            observer.on_message("резервная копия не нужна: в цели нет файлов выбранных компонентов");
+            observer
+                .on_message("резервная копия не нужна: в цели нет файлов выбранных компонентов");
             return Ok(None);
         }
 
@@ -765,7 +783,11 @@ impl MigrationWizard {
         let entry = manager.create_backup(
             &target,
             &existing,
-            &format!("мастер миграции: перед {} ({})", mode_label(self.config.mode), target.display()),
+            &format!(
+                "мастер миграции: перед {} ({})",
+                mode_label(self.config.mode),
+                target.display()
+            ),
         )?;
         observer.on_message(&format!("резервная копия: {}", entry.path.display()));
         Ok(Some(entry.path))
@@ -816,7 +838,9 @@ impl MigrationWizard {
         for format in formats {
             match report.save(&directory, format) {
                 Ok(path) => paths.push(path),
-                Err(error) => warnings.push(format!("отчёт '{}' не сохранён: {}", format.key(), error)),
+                Err(error) => {
+                    warnings.push(format!("отчёт '{}' не сохранён: {}", format.key(), error))
+                }
             }
         }
 
@@ -990,9 +1014,10 @@ impl MigrationWizard {
                 "не задан целевой домашний каталог".to_string(),
             ));
         }
-        let target = self.config.ssh.clone().ok_or_else(|| {
-            MigrationError::InvalidInput("не задано SSH-подключение".to_string())
-        })?;
+        let target =
+            self.config.ssh.clone().ok_or_else(|| {
+                MigrationError::InvalidInput("не задано SSH-подключение".to_string())
+            })?;
 
         let inventory = self.scan()?.clone();
         apply_scan_warnings(&inventory, report);
@@ -1271,11 +1296,7 @@ fn is_private_key(relative: &Path) -> bool {
 
 /// Файл `.ssh/authorized_keys` (§4 — переносится только по выбору).
 fn is_authorized_keys(relative: &Path) -> bool {
-    let in_ssh = relative
-        .iter()
-        .next()
-        .and_then(|part| part.to_str())
-        == Some(".ssh");
+    let in_ssh = relative.iter().next().and_then(|part| part.to_str()) == Some(".ssh");
     let name = relative
         .file_name()
         .and_then(|name| name.to_str())
@@ -1352,7 +1373,8 @@ fn apply_scan_warnings(inventory: &ScanInventory, report: &mut MigrationReport) 
         .any(|app| app.enabled && app.requires_restart && app.files > 0)
     {
         report.add_recommendation(
-            "перезапустите перенесённые приложения, чтобы они подхватили настройки (§5)".to_string(),
+            "перезапустите перенесённые приложения, чтобы они подхватили настройки (§5)"
+                .to_string(),
         );
     }
 }
@@ -1435,7 +1457,6 @@ fn operation_type(mode: MigrationMode) -> OperationType {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1486,8 +1507,14 @@ mod tests {
 
         assert_eq!(wizard.stage(), WizardStage::Scanned);
         assert_eq!(inventory.total_files, 2);
-        assert!(inventory.items.iter().any(|item| item.relative == Path::new("Documents/doc.txt")));
-        assert!(inventory.items.iter().any(|item| item.relative == Path::new(".ssh/config")));
+        assert!(inventory
+            .items
+            .iter()
+            .any(|item| item.relative == Path::new("Documents/doc.txt")));
+        assert!(inventory
+            .items
+            .iter()
+            .any(|item| item.relative == Path::new(".ssh/config")));
     }
 
     #[test]
@@ -1584,7 +1611,9 @@ mod tests {
         assert!(!relative.iter().any(|path| path.ends_with(".tmp")));
         assert!(inventory.excluded.len() >= 2);
         // §4: приватный ключ и authorized_keys не попадают в перенос.
-        assert!(inventory.private_keys.contains(&".ssh/id_ed25519".to_string()));
+        assert!(inventory
+            .private_keys
+            .contains(&".ssh/id_ed25519".to_string()));
         assert!(!relative.contains(&".ssh/id_ed25519".to_string()));
         assert!(!relative.contains(&".ssh/authorized_keys".to_string()));
     }
@@ -1608,7 +1637,9 @@ mod tests {
         assert!(relative.contains(&".ssh/id_ed25519".to_string()));
         assert!(relative.contains(&".ssh/authorized_keys".to_string()));
         // Список приватных ключей формируется для подтверждения (§4).
-        assert!(inventory.private_keys.contains(&".ssh/id_ed25519".to_string()));
+        assert!(inventory
+            .private_keys
+            .contains(&".ssh/id_ed25519".to_string()));
     }
 
     #[test]
@@ -1712,7 +1743,6 @@ mod tests {
             b"doc"
         );
     }
-
 
     #[test]
     fn test_cancel_stops_before_execution() {
@@ -1821,15 +1851,3 @@ mod tests {
         assert!(!path.exists());
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-

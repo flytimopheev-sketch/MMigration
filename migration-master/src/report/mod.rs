@@ -173,7 +173,8 @@ impl MigrationReport {
 
     /// Добавить пропущенный файл с указанием причины.
     pub fn record_skipped(&mut self, path: impl Into<String>, reason: impl Into<String>) {
-        self.skipped_files.push(format!("{}: {}", path.into(), reason.into()));
+        self.skipped_files
+            .push(format!("{}: {}", path.into(), reason.into()));
     }
 
     /// Добавить рекомендацию (без дублей).
@@ -253,9 +254,21 @@ td,th{{border:1px solid #ccc;padding:.4rem .8rem;text-align:left}}</style></head
             packages = self.stats.packages,
             printers = self.stats.printers,
             duration = self.stats.duration_ms,
-            warnings = if warnings.is_empty() { "<li>нет</li>" } else { &warnings },
-            errors = if errors.is_empty() { "<li>нет</li>" } else { &errors },
-            components = if components.is_empty() { "<li>нет</li>" } else { &components },
+            warnings = if warnings.is_empty() {
+                "<li>нет</li>"
+            } else {
+                &warnings
+            },
+            errors = if errors.is_empty() {
+                "<li>нет</li>"
+            } else {
+                &errors
+            },
+            components = if components.is_empty() {
+                "<li>нет</li>"
+            } else {
+                &components
+            },
             extra = extra,
         )
     }
@@ -300,10 +313,16 @@ td,th{{border:1px solid #ccc;padding:.4rem .8rem;text-align:left}}</style></head
 
         let mut details = String::new();
         if let Some(backup) = &self.backup_path {
-            details.push_str(&format!("<p>Резервная копия: {}</p>\n", escape_html(backup)));
+            details.push_str(&format!(
+                "<p>Резервная копия: {}</p>\n",
+                escape_html(backup)
+            ));
         }
         if let Some(compatibility) = &self.compatibility {
-            details.push_str(&format!("<p>Совместимость: {}</p>\n", escape_html(compatibility)));
+            details.push_str(&format!(
+                "<p>Совместимость: {}</p>\n",
+                escape_html(compatibility)
+            ));
         }
 
         let sections_html = sections
@@ -340,7 +359,10 @@ td,th{{border:1px solid #ccc;padding:.4rem .8rem;text-align:left}}</style></head
         out.push_str(&format!("Статус: {}\n\n", self.status()));
 
         out.push_str("СТАТИСТИКА\n");
-        out.push_str(&format!("  Файлов перенесено: {}\n", self.stats.files_copied));
+        out.push_str(&format!(
+            "  Файлов перенесено: {}\n",
+            self.stats.files_copied
+        ));
         out.push_str(&format!(
             "  Байт перенесено: {}\n",
             human_bytes::human_bytes(self.stats.bytes_copied as f64)
@@ -352,7 +374,10 @@ td,th{{border:1px solid #ccc;padding:.4rem .8rem;text-align:left}}</style></head
         ));
         out.push_str(&format!("  Пакетов: {}\n", self.stats.packages));
         out.push_str(&format!("  Принтеров: {}\n", self.stats.printers));
-        out.push_str(&format!("  Длительность, мс: {}\n\n", self.stats.duration_ms));
+        out.push_str(&format!(
+            "  Длительность, мс: {}\n\n",
+            self.stats.duration_ms
+        ));
 
         out.push_str("КОМПОНЕНТЫ\n");
         if self.components.is_empty() {
@@ -419,7 +444,13 @@ td,th{{border:1px solid #ccc;padding:.4rem .8rem;text-align:left}}</style></head
                 .status()
         } else {
             std::process::Command::new(converter)
-                .args(["--headless", "--norestore", "--convert-to", "pdf", "--outdir"])
+                .args([
+                    "--headless",
+                    "--norestore",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                ])
                 .arg(directory)
                 .arg(&html)
                 .status()
@@ -574,7 +605,9 @@ mod tests {
         report.components = vec![crate::config::ComponentType::Documents];
         report.stats.files_copied = 10;
         report.stats.bytes_copied = 1024;
-        report.warnings.push("файл пропущен <по правам>".to_string());
+        report
+            .warnings
+            .push("файл пропущен <по правам>".to_string());
         report.errors.push("net".to_string());
 
         assert!(!report.is_success());
@@ -595,7 +628,10 @@ mod tests {
         for format in ReportFormat::all() {
             assert_eq!(ReportFormat::from_key(format.key()).expect("key"), format);
         }
-        assert_eq!(ReportFormat::from_key("TEXT").expect("alias"), ReportFormat::Text);
+        assert_eq!(
+            ReportFormat::from_key("TEXT").expect("alias"),
+            ReportFormat::Text
+        );
         assert!(ReportFormat::from_key("docx").is_err());
     }
 
@@ -612,7 +648,9 @@ mod tests {
         report.stats.bytes_copied = 2048;
         report.record_transferred("Documents/otchet.odt");
         report.record_skipped("Documents/staroe.odt", "уже существует");
-        report.conflicts.push("Documents/a.odt — заменён".to_string());
+        report
+            .conflicts
+            .push("Documents/a.odt — заменён".to_string());
         report.installed_packages.push("libreoffice".to_string());
         report.restored_printers.push("HP-LaserJet".to_string());
         report.add_recommendation("Проверьте принтер после входа".to_string());
@@ -680,8 +718,7 @@ mod tests {
             .as_object_mut()
             .expect("object")
             .remove("transferred_files");
-        let legacy: MigrationReport =
-            serde_json::from_value(value).expect("legacy deserialize");
+        let legacy: MigrationReport = serde_json::from_value(value).expect("legacy deserialize");
         assert!(legacy.transferred_files.is_empty());
         assert!(!legacy.cancelled);
     }
@@ -689,12 +726,8 @@ mod tests {
     #[test]
     fn test_save_reports() {
         let dir = tempdir().expect("tempdir");
-        let report = MigrationReport::new(
-            "save-test",
-            crate::config::MigrationMode::Restore,
-            "a",
-            "b",
-        );
+        let report =
+            MigrationReport::new("save-test", crate::config::MigrationMode::Restore, "a", "b");
         assert!(report.is_success());
 
         let json_path = report.save_json(dir.path()).expect("json");
@@ -706,4 +739,3 @@ mod tests {
             .contains("save-test"));
     }
 }
-

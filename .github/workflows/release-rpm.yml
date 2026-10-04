@@ -47,27 +47,25 @@ jobs:
 
       - name: Подготовить исходники (tarball для Source0)
         run: |
-          cd ..
-          git clone --depth 1 --branch "${GITHUB_REF_NAME}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" _src_clone 2>/dev/null \
-            || git clone --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" _src_clone
-          rm -rf _src_clone/.git
-          tar czf "migration-master-${{ steps.ver.outputs.version }}.tar.gz" \
-            --transform "s,^_src_clone,migration-master-${{ steps.ver.outputs.version }}," _src_clone
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          # Корень исходников пакета — каталог migration-master/, а не корень
+          # репозитория: spec ожидает resources/, docs/, src/ на верхнем уровне.
+          tar czf "migration-master-${VERSION}.tar.gz" \
+            --transform "s,^migration-master,migration-master-${VERSION}," \
+            --exclude-vcs --exclude='./target' \
+            migration-master
 
       - name: Собрать RPM
         run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
           mkdir -p ~/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
-          mv "migration-master-${{ steps.ver.outputs.version }}.tar.gz" ~/rpmbuild/SOURCES/
+          mv "migration-master-${VERSION}.tar.gz" ~/rpmbuild/SOURCES/
           cp migration-master/rpm/migration-master.spec ~/rpmbuild/SPECS/
           rpmbuild -bb ~/rpmbuild/SPECS/migration-master.spec \
             --define "_topdir $HOME/rpmbuild" \
-            --define "_sourcedir $HOME/rpmbuild/SOURCES" \
-            --define "_specdir $HOME/rpmbuild/SPECS" \
-            --define "_builddir $HOME/rpmbuild/BUILD" \
-            --define "_rpmdir $HOME/rpmbuild/RPMS" \
-            --define "_srcrpmdir $HOME/rpmbuild/SRPMS" \
-            --define "_rpmfilename migration-master-%{version}-%{release}.x86_64.rpm" \
-            --define "version ${{ steps.ver.outputs.version }}" \
+            --define "version ${VERSION}" \
             --with gui
 
       - name: Проверить содержимое пакета

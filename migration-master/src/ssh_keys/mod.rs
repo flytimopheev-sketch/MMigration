@@ -145,10 +145,7 @@ fn classify(name: &str, path: &Path) -> SshKeyKind {
         .map(|content| content.contains("PRIVATE KEY"))
         .unwrap_or(false);
 
-    if is_private
-        || name.starts_with("id_")
-        || name.ends_with("_rsa")
-        || name.ends_with("_ed25519")
+    if is_private || name.starts_with("id_") || name.ends_with("_rsa") || name.ends_with("_ed25519")
     {
         SshKeyKind::Private
     } else {
@@ -178,10 +175,13 @@ fn extract_comment(path: &Path, kind: SshKeyKind) -> Option<String> {
 fn mark_pairs(items: &mut [SshKeyInfo]) {
     for index in 0..items.len() {
         if items[index].kind == SshKeyKind::Private {
-            let base = items[index].relative_path.trim_end_matches(".pub").to_string();
-            let has_public = items
-                .iter()
-                .any(|other| other.kind == SshKeyKind::Public && other.relative_path == format!("{}.pub", base));
+            let base = items[index]
+                .relative_path
+                .trim_end_matches(".pub")
+                .to_string();
+            let has_public = items.iter().any(|other| {
+                other.kind == SshKeyKind::Public && other.relative_path == format!("{}.pub", base)
+            });
             items[index].paired = has_public;
         }
     }
@@ -230,10 +230,7 @@ mod tests {
             .find(|item| item.relative_path == ".ssh/id_ed25519.pub")
             .expect("public");
         assert_eq!(public.kind, SshKeyKind::Public);
-        assert_eq!(
-            public.comment.as_deref(),
-            Some("user@host")
-        );
+        assert_eq!(public.comment.as_deref(), Some("user@host"));
 
         assert_eq!(
             items
@@ -281,4 +278,3 @@ mod tests {
         SshKeysScanner::fix_permissions(dir.path()).expect("fix");
     }
 }
-

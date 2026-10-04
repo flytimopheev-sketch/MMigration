@@ -165,4 +165,3 @@ mod tests {
         assert_eq!(command[1], "load");
     }
 }
-

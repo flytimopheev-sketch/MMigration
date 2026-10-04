@@ -132,7 +132,13 @@ mod tests {
         let text = "bash\t5.1.16-1\nglibc\t2.36-9\n\nнет-табуляции\n";
         let entries = parse_package_list(text);
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0], PackageEntry { name: "bash".into(), version: "5.1.16-1".into() });
+        assert_eq!(
+            entries[0],
+            PackageEntry {
+                name: "bash".into(),
+                version: "5.1.16-1".into()
+            }
+        );
         assert_eq!(entries[1].name, "glibc");
     }
 
@@ -148,4 +154,3 @@ mod tests {
         assert!(rpm.contains(&"htop".to_string()));
     }
 }
-

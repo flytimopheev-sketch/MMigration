@@ -295,7 +295,10 @@ fn create_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
     form.add(&entry_row("Файл архива (.rmm)", &output_entry));
 
     let pass_entry = gtk::PasswordEntry::builder().show_peek_icon(true).build();
-    form.add(&entry_row("Пароль шифрования (не сохраняется)", &pass_entry));
+    form.add(&entry_row(
+        "Пароль шифрования (не сохраняется)",
+        &pass_entry,
+    ));
 
     let compression = gtk::SpinButton::with_range(0.0, 22.0, 1.0);
     compression.set_value(3.0);
@@ -303,9 +306,7 @@ fn create_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
 
     content.append(&form);
 
-    let components_group = adw::PreferencesGroup::builder()
-        .title("Компоненты")
-        .build();
+    let components_group = adw::PreferencesGroup::builder().title("Компоненты").build();
     let defaults = ComponentType::default_components();
     let mut checks: Vec<(ComponentType, gtk::CheckButton)> = Vec::new();
     for component in ComponentType::all_components() {
@@ -350,8 +351,16 @@ fn create_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
     content.append(&status);
 
     bind_create_action(
-        &window, &run_button, &progress, &status, &home_entry, &output_entry, &pass_entry,
-        &compression, &dry_check, checks,
+        &window,
+        &run_button,
+        &progress,
+        &status,
+        &home_entry,
+        &output_entry,
+        &pass_entry,
+        &compression,
+        &dry_check,
+        checks,
     );
 
     page("Создать архив профиля", &content)
@@ -447,7 +456,11 @@ fn bind_create_action(
                 let created = ArchiveManager::create(&options, observer)?;
                 Ok(format!(
                     "Архив {}: {} файлов, {}",
-                    if dry_run { "проверен (dry-run)" } else { "создан" },
+                    if dry_run {
+                        "проверен (dry-run)"
+                    } else {
+                        "создан"
+                    },
                     created.manifest.total_files,
                     human_bytes::human_bytes(created.manifest.total_size as f64)
                 ))
@@ -659,13 +672,19 @@ fn ssh_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
         .placeholder_text("user@192.168.1.10:22")
         .hexpand(true)
         .build();
-    form.add(&entry_row("Адрес (пользователь@хост[:порт])", &target_entry));
+    form.add(&entry_row(
+        "Адрес (пользователь@хост[:порт])",
+        &target_entry,
+    ));
 
     let remote_entry = gtk::Entry::builder()
         .placeholder_text("~/")
         .hexpand(true)
         .build();
-    form.add(&entry_row("Домашний каталог на удалённом хосте", &remote_entry));
+    form.add(&entry_row(
+        "Домашний каталог на удалённом хосте",
+        &remote_entry,
+    ));
 
     content.append(&form);
 
@@ -904,7 +923,9 @@ fn settings_page() -> adw::NavigationPage {
     }
     content.append(&paths);
 
-    let about = adw::PreferencesGroup::builder().title("О программе").build();
+    let about = adw::PreferencesGroup::builder()
+        .title("О программе")
+        .build();
     about.add(&info_row("Приложение", crate::APP_NAME));
     about.add(&info_row("Версия", crate::VERSION));
     about.add(&info_row("Идентификатор", crate::APP_ID));

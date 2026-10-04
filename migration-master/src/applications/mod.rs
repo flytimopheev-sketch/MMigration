@@ -168,11 +168,7 @@ fn default_enabled() -> bool {
 
 impl AppRule {
     /// Правило с обязательными полями.
-    pub fn new(
-        app_name: impl Into<String>,
-        config_paths: &[&str],
-        data_paths: &[&str],
-    ) -> Self {
+    pub fn new(app_name: impl Into<String>, config_paths: &[&str], data_paths: &[&str]) -> Self {
         Self {
             app_name: app_name.into(),
             config_paths: config_paths.iter().map(|s| s.to_string()).collect(),
@@ -240,11 +236,15 @@ impl AppRule {
 /// Встроенные правила миграции для типовых приложений РЕД ОС (§5).
 pub fn builtin_rules() -> Vec<AppRule> {
     vec![
-        AppRule::new("Firefox", &[".mozilla/firefox"], &[".cache/mozilla/firefox"])
-            .with_warnings(&[
-                "кэш браузера не переносится автоматически",
-                "профиль может содержать сохранённые пароли",
-            ]),
+        AppRule::new(
+            "Firefox",
+            &[".mozilla/firefox"],
+            &[".cache/mozilla/firefox"],
+        )
+        .with_warnings(&[
+            "кэш браузера не переносится автоматически",
+            "профиль может содержать сохранённые пароли",
+        ]),
         AppRule::new(
             "Chromium/Chrome",
             &[".config/chromium", ".config/google-chrome"],
@@ -380,9 +380,7 @@ fn rule_from_yaml(node: &Yaml) -> Result<AppRule> {
         transfer_mode: get("transfer_mode")
             .and_then(yaml_str)
             .unwrap_or_else(default_transfer_mode),
-        requires_restart: get("requires_restart")
-            .and_then(yaml_bool)
-            .unwrap_or(false),
+        requires_restart: get("requires_restart").and_then(yaml_bool).unwrap_or(false),
         min_version: get("min_version").and_then(yaml_str),
         warnings: get("warnings").map(yaml_str_list).unwrap_or_default(),
         post_migration_hook: get("post_migration_hook").and_then(yaml_str),
@@ -566,7 +564,11 @@ Name=New
     #[test]
     fn test_builtin_rules_cover_required_apps() {
         let rules = builtin_rules();
-        assert!(rules.len() >= 10, "ожидалось >= 10 правил, есть {}", rules.len());
+        assert!(
+            rules.len() >= 10,
+            "ожидалось >= 10 правил, есть {}",
+            rules.len()
+        );
         for name in ["Firefox", "Thunderbird", "LibreOffice", "Git", "SSH"] {
             assert!(
                 rules.iter().any(|rule| rule.app_name.contains(name)),
@@ -592,8 +594,7 @@ Name=New
     /// пользовательский файл, и содержать корректные пути (§5).
     #[test]
     fn test_example_rules_file_is_valid() {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/examples/app-rules.yaml");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/examples/app-rules.yaml");
         let rules = load_rules_file(&path)
             .unwrap_or_else(|error| panic!("пример правил не загрузился: {}", error));
 
@@ -601,9 +602,10 @@ Name=New
         for rule in &rules {
             assert!(!rule.app_name.trim().is_empty(), "правило без имени");
             assert!(
-                rule.config_paths.iter().chain(rule.data_paths.iter()).any(|p| {
-                    p.starts_with("~/") || p.starts_with('/')
-                }),
+                rule.config_paths
+                    .iter()
+                    .chain(rule.data_paths.iter())
+                    .any(|p| { p.starts_with("~/") || p.starts_with('/') }),
                 "правило '{}' не содержит путей относительно HOME",
                 rule.app_name
             );
@@ -637,7 +639,10 @@ Name=New
         assert!(rules[0].requires_restart);
         assert_eq!(
             rules[0].relative_paths(),
-            vec![".config/myapp".to_string(), ".local/share/myapp".to_string()]
+            vec![
+                ".config/myapp".to_string(),
+                ".local/share/myapp".to_string()
+            ]
         );
         assert_eq!(
             rules[0].post_migration_hook.as_deref(),
@@ -676,11 +681,14 @@ Name=New
 
     #[test]
     fn test_rule_matches_relative() {
-        let rule = AppRule::new("Chromium/Chrome", &[".config/chromium"], &[".cache/chromium"]);
+        let rule = AppRule::new(
+            "Chromium/Chrome",
+            &[".config/chromium"],
+            &[".cache/chromium"],
+        );
         assert!(rule.matches_relative(".config/chromium"));
         assert!(rule.matches_relative(".config/chromium/Default/Preferences"));
         assert!(!rule.matches_relative(".config/chromiumx/Preferences"));
         assert!(!rule.matches_relative(".config/firefox"));
     }
 }
-

@@ -154,7 +154,9 @@ mod tests {
         let info = MainScreenInfo::collect();
         for name in REQUIRED_TOOLS {
             assert!(
-                info.tools.iter().any(|tool| tool.name == *name && tool.required),
+                info.tools
+                    .iter()
+                    .any(|tool| tool.name == *name && tool.required),
                 "обязательная утилита {} отсутствует в списке",
                 name
             );

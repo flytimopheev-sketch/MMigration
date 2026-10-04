@@ -76,7 +76,11 @@ impl FileEntry {
             size: self.size,
             is_symlink: self.is_symlink,
             symlink_target: self.symlink_target.as_ref().map(PathBuf::from),
-            mode: if self.mode == 0 { None } else { Some(self.mode) },
+            mode: if self.mode == 0 {
+                None
+            } else {
+                Some(self.mode)
+            },
         }
     }
 
@@ -223,7 +227,6 @@ pub struct ArchiveInfo {
     pub integrity_verified: bool,
 }
 
-
 /// Опции восстановления.
 #[derive(Debug, Clone)]
 pub struct RestoreOptions {
@@ -303,7 +306,6 @@ impl VerifyReport {
         self.manifest_ok && self.mismatched.is_empty() && self.missing.is_empty()
     }
 }
-
 
 /// Определить компонент по относительному пути (по префиксу в архиве).
 fn component_for_path(relative: &str) -> Option<ComponentType> {
@@ -409,7 +411,6 @@ fn build_manifest(
 
     Ok(manifest)
 }
-
 
 /// Менеджер архивов миграции.
 pub struct ArchiveManager;
@@ -711,8 +712,6 @@ impl ArchiveManager {
     }
 }
 
-
-
 /// Определить конфликт для файла архива относительно целевого пути.
 fn detect_conflict_for(
     file_entry: &FileEntry,
@@ -869,7 +868,6 @@ fn create_symlink(target: &Path, destination: &Path) -> Result<()> {
     }
 }
 
-
 /// Ближайший существующий каталог для `path` (сам путь либо его родитель).
 ///
 /// Нужен для оценки свободного места в dry-run, когда целевой каталог ещё
@@ -903,7 +901,10 @@ impl ArchiveManager {
         // Dry-run не должен оставлять следов: каталог назначения не создаётся.
         // Проверка места идёт по ближайшему существующему родителю.
         if options.dry_run {
-            file_transfer::ensure_space(&nearest_existing_ancestor(&options.target_root), required)?;
+            file_transfer::ensure_space(
+                &nearest_existing_ancestor(&options.target_root),
+                required,
+            )?;
         } else {
             std::fs::create_dir_all(&options.target_root)?;
             file_transfer::ensure_space(&options.target_root, required)?;
@@ -946,8 +947,9 @@ impl ArchiveManager {
             }
 
             // Защита от path traversal: путь берётся только из манифеста
-            let relative = security::sanitize_relative_path(Path::new(&file_entry.relative_path))
-                .map_err(|_| MigrationError::PathTraversal(file_entry.relative_path.clone()))?;
+            let relative =
+                security::sanitize_relative_path(Path::new(&file_entry.relative_path))
+                    .map_err(|_| MigrationError::PathTraversal(file_entry.relative_path.clone()))?;
             let mut destination = security::safe_join(&options.target_root, &relative)?;
 
             let source_mtime = entry.header().mtime().ok();
@@ -1017,7 +1019,6 @@ impl ArchiveManager {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1081,9 +1082,8 @@ mod tests {
         let home = make_home(dir.path());
         let output = dir.path().join("profile.rmm");
 
-        let created =
-            ArchiveManager::create(&create_options(&home, &output, None), &NoProgress)
-                .expect("create");
+        let created = ArchiveManager::create(&create_options(&home, &output, None), &NoProgress)
+            .expect("create");
 
         assert!(created.archive_size > 0);
         assert!(!created.encrypted);
@@ -1113,8 +1113,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let home = make_home(dir.path());
         let output = dir.path().join("profile.rmm");
-        ArchiveManager::create(&create_options(&home, &output, None), &NoProgress)
-            .expect("create");
+        ArchiveManager::create(&create_options(&home, &output, None), &NoProgress).expect("create");
 
         let target = dir.path().join("target");
         std::fs::create_dir_all(target.join("Documents")).expect("mkdir");
@@ -1136,9 +1135,8 @@ mod tests {
         );
 
         // Полное восстановление с заменой
-        let result =
-            ArchiveManager::restore(&restore_options(&output, &target), &NoProgress)
-                .expect("restore");
+        let result = ArchiveManager::restore(&restore_options(&output, &target), &NoProgress)
+            .expect("restore");
         assert!(result.is_success(), "ошибки: {:?}", result.errors);
         assert_eq!(result.restored_files, 2);
         assert_eq!(result.verified_files, 2);
@@ -1151,7 +1149,6 @@ mod tests {
             b"key=value"
         );
     }
-
 
     #[test]
     fn test_dry_run_create_and_restore() {
@@ -1166,8 +1163,7 @@ mod tests {
         assert_eq!(created.archive_size, 0);
         assert_eq!(created.manifest.total_files, 2);
 
-        ArchiveManager::create(&create_options(&home, &output, None), &NoProgress)
-            .expect("create");
+        ArchiveManager::create(&create_options(&home, &output, None), &NoProgress).expect("create");
 
         let target = dir.path().join("target-dry");
         let mut restore = restore_options(&output, &target);
@@ -1181,7 +1177,11 @@ mod tests {
             "dry-run создал каталог назначения: {}",
             target.display()
         );
-        assert!(result.errors.is_empty(), "ошибки dry-run: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "ошибки dry-run: {:?}",
+            result.errors
+        );
     }
 
     /// Проверка свободного места в dry-run работает по существующему родителю
@@ -1191,8 +1191,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let home = make_home(dir.path());
         let output = dir.path().join("profile.rmm");
-        ArchiveManager::create(&create_options(&home, &output, None), &NoProgress)
-            .expect("create");
+        ArchiveManager::create(&create_options(&home, &output, None), &NoProgress).expect("create");
 
         let target = dir.path().join("missing-parent").join("target");
         let mut restore = restore_options(&output, &target);
@@ -1267,4 +1266,3 @@ mod tests {
         assert_eq!(component_for_path("unknown/file"), None);
     }
 }
-
