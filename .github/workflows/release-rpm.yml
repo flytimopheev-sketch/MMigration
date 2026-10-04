@@ -21,6 +21,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
+    # contents: write нужен для загрузки RPM в GitHub Releases: GITHUB_TOKEN
+    # по умолчанию read-only, и шаг публикации падает с 403 "Resource not
+    # accessible by integration".
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
