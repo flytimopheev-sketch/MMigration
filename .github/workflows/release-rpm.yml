@@ -65,7 +65,10 @@ jobs:
           mkdir -p ~/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
           mv "migration-master-${VERSION}.tar.gz" ~/rpmbuild/SOURCES/
           cp migration-master/rpm/migration-master.spec ~/rpmbuild/SPECS/
-          rpmbuild -bb ~/rpmbuild/SPECS/migration-master.spec \
+          # --nodeps: rpmbuild -bb проверяет BuildRequires через rpm, которого на
+          # ubuntu-latest нет. Зависимости уже установлены шагом выше, поэтому
+          # проверку пропускаем (на РЕД ОС spec собирается как обычно).
+          rpmbuild -bb --nodeps ~/rpmbuild/SPECS/migration-master.spec \
             --define "_topdir $HOME/rpmbuild" \
             --define "version ${VERSION}" \
             --with gui

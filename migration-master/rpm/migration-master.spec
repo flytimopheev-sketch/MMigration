@@ -90,7 +90,7 @@ fi
 %{_mandir}/man1/migration-master.1.gz
 
 %changelog
-* Sat Oct 04 2026 Migration Master Team <team@redos.local> - 0.1.0-1
+* Sun Oct 04 2026 Migration Master Team <team@redos.local> - 0.1.0-1
 - Установка migration-master-helper, политики PolicyKit, иконки и примеров
 - Подключены юнит-тесты в %check
 - Исправлена установка несуществующего бинарника mm-backend
