@@ -10,8 +10,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+// adw::prelude::* содержит трейты adw, но не gtk::prelude::IsA,
+// поэтому импортируем прелюдию gtk4 отдельным glob-импортом.
 use adw::prelude::*;
-use gtk::prelude::IsA;
+use gtk::prelude::*;
 use gtk::{glib, Orientation};
 
 use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
@@ -381,15 +383,15 @@ fn bind_create_action(
     dry_check: &gtk::CheckButton,
     checks: Vec<(ComponentType, gtk::CheckButton)>,
 ) {
-    let window = window.clone();
-    let run_button = run_button.clone();
-    let progress = progress.clone();
-    let status = status.clone();
-    let home_entry = home_entry.clone();
-    let output_entry = output_entry.clone();
-    let pass_entry = pass_entry.clone();
-    let compression = compression.clone();
-    let dry_check = dry_check.clone();
+    let window = (*window).clone();
+    let run_button = (*run_button).clone();
+    let progress = (*progress).clone();
+    let status = (*status).clone();
+    let home_entry = (*home_entry).clone();
+    let output_entry = (*output_entry).clone();
+    let pass_entry = (*pass_entry).clone();
+    let compression = (*compression).clone();
+    let dry_check = (*dry_check).clone();
 
     run_button.connect_clicked(move |_| {
         let source_home = PathBuf::from(home_entry.text().to_string());
@@ -572,16 +574,16 @@ fn bind_restore_action(
     verify_check: &gtk::CheckButton,
     dry_check: &gtk::CheckButton,
 ) {
-    let window = window.clone();
-    let run_button = run_button.clone();
-    let progress = progress.clone();
-    let status = status.clone();
-    let archive_entry = archive_entry.clone();
-    let target_entry = target_entry.clone();
-    let pass_entry = pass_entry.clone();
-    let strategy_drop = strategy_drop.clone();
-    let verify_check = verify_check.clone();
-    let dry_check = dry_check.clone();
+    let window = (*window).clone();
+    let run_button = (*run_button).clone();
+    let progress = (*progress).clone();
+    let status = (*status).clone();
+    let archive_entry = (*archive_entry).clone();
+    let target_entry = (*target_entry).clone();
+    let pass_entry = (*pass_entry).clone();
+    let strategy_drop = (*strategy_drop).clone();
+    let verify_check = (*verify_check).clone();
+    let dry_check = (*dry_check).clone();
 
     run_button.connect_clicked(move |_| {
         let archive = PathBuf::from(archive_entry.text().to_string());
@@ -746,13 +748,13 @@ fn bind_ssh_action(
     remote_entry: &gtk::Entry,
     dry_check: &gtk::CheckButton,
 ) {
-    let window = window.clone();
-    let run_button = run_button.clone();
-    let progress = progress.clone();
-    let status = status.clone();
-    let target_entry = target_entry.clone();
-    let remote_entry = remote_entry.clone();
-    let dry_check = dry_check.clone();
+    let window = (*window).clone();
+    let run_button = (*run_button).clone();
+    let progress = (*progress).clone();
+    let status = (*status).clone();
+    let target_entry = (*target_entry).clone();
+    let remote_entry = (*remote_entry).clone();
+    let dry_check = (*dry_check).clone();
 
     run_button.connect_clicked(move |_| {
         let Some((user, host, port)) = parse_ssh_target(&target_entry.text()) else {
@@ -1016,8 +1018,8 @@ where
         }
     });
 
-    let bar = progress_bar.clone();
-    let label = status_label.clone();
+    let bar = (*progress_bar).clone();
+    let label = (*status_label).clone();
     let mut on_done = Some(on_done);
     let _ = glib::timeout_add_local(Duration::from_millis(150), move || {
         let snapshot = match state.lock() {

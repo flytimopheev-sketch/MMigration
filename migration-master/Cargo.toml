@@ -87,7 +87,9 @@ uuid = { version = "1.6", features = ["v4"] }
 # (именно эти имена используются в src/ui/gtk_app.rs и в документации).
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.9", package = "gtk4", optional = true }
-adw = { version = "0.7", package = "libadwaita", optional = true }
+# v1_4 нужен для adw::NavigationView, adw::NavigationPage и adw::ToolbarView,
+# которые использует мастер; без этого фичи они просто не компилируются.
+adw = { version = "0.7", package = "libadwaita", optional = true, features = ["v1_4"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"
