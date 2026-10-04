@@ -1,0 +1,88 @@
+name: Release RPM
+
+# Сборка release RPM-пакета на Linux (без Docker).
+# Триггеры: тег v*; ручной запуск; успешная сборка основного CI на main.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      with_gui:
+        description: "Собрать с графическим интерфейсом (GTK4 + libadwaita)"
+        type: boolean
+        default: true
+
+jobs:
+  rpm:
+    name: Build RPM (release)
+    # Только для тегов и ручного запуска: на каждый push в main пакет не собираем,
+    # чтобы не расходовать лимит CI. Основной прогон тестов — в rust.yml.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Определить версию из тега
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=0.1.0" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Установить rpmbuild и зависимости сборки
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm build-essential pkg-config \
+            libgtk-4-dev libadwaita-1-dev libsqlite3-dev libcups2-dev zstd
+
+      - name: Установить Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Подготовить исходники (tarball для Source0)
+        run: |
+          cd ..
+          git clone --depth 1 --branch "${GITHUB_REF_NAME}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" _src_clone 2>/dev/null \
+            || git clone --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" _src_clone
+          rm -rf _src_clone/.git
+          tar czf "migration-master-${{ steps.ver.outputs.version }}.tar.gz" \
+            --transform "s,^_src_clone,migration-master-${{ steps.ver.outputs.version }}," _src_clone
+
+      - name: Собрать RPM
+        run: |
+          mkdir -p ~/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+          mv "migration-master-${{ steps.ver.outputs.version }}.tar.gz" ~/rpmbuild/SOURCES/
+          cp migration-master/rpm/migration-master.spec ~/rpmbuild/SPECS/
+          rpmbuild -bb ~/rpmbuild/SPECS/migration-master.spec \
+            --define "_topdir $HOME/rpmbuild" \
+            --define "_sourcedir $HOME/rpmbuild/SOURCES" \
+            --define "_specdir $HOME/rpmbuild/SPECS" \
+            --define "_builddir $HOME/rpmbuild/BUILD" \
+            --define "_rpmdir $HOME/rpmbuild/RPMS" \
+            --define "_srcrpmdir $HOME/rpmbuild/SRPMS" \
+            --define "_rpmfilename migration-master-%{version}-%{release}.x86_64.rpm" \
+            --define "version ${{ steps.ver.outputs.version }}" \
+            --with gui
+
+      - name: Проверить содержимое пакета
+        run: |
+          rpm -qlp ~/rpmbuild/RPMS/x86_64/*.rpm
+
+      - name: Сохранить артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-master-rpm-${{ steps.ver.outputs.version }}
+          path: ~/rpmbuild/RPMS/x86_64/*.rpm
+          if-no-files-found: error
+
+      - name: Прикрепить RPM к GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ~/rpmbuild/RPMS/x86_64/*.rpm

@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Migration Master — макет интерфейса (GTK4 / libadwaita)</title>
+<style>
+  :root{
+    --bg:#242424; --bg-2:#2e2e2e; --card:#363636; --line:#4a4a4a;
+    --fg:#ffffff; --fg-dim:#c0c0bc; --fg-mute:#9a9a94;
+    --accent:#3584e4; --ok:#26a269; --warn:#e5a50a; --err:#c01c28;
+    --radius:12px; --sidebar:#1b1b1b;
+    --mono:"JetBrains Mono","Fira Code",Consolas,monospace;
+  }
+  :root.light{
+    --bg:#fafafa; --bg-2:#ffffff; --card:#ffffff; --line:#dcdcdc;
+    --fg:#1c1c1c; --fg-dim:#4a4a4a; --fg-mute:#6b6b6b;
+    --sidebar:#ececec; --accent:#1c71d8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,"Segoe UI",Cantarell,"Noto Sans",sans-serif;
+       background:var(--bg);color:var(--fg);}
+  .meta{max-width:1240px;margin:0 auto;padding:28px 24px 8px;}
+  .meta h1{margin:0 0 6px;font-size:24px;font-weight:650;letter-spacing:.2px}
+  .meta p{margin:0;color:var(--fg-dim);font-size:14px;line-height:1.5}
+  .meta .note{margin-top:10px;font-size:12.5px;color:var(--fg-mute);
+    border-left:3px solid var(--accent);padding:6px 10px;background:var(--bg-2);border-radius:0 6px 6px 0}
+  .toolbar{max-width:1240px;margin:0 auto;padding:14px 24px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .toolbar button{font:inherit;font-size:13px;padding:7px 13px;border-radius:8px;cursor:pointer;
+    background:var(--card);color:var(--fg);border:1px solid var(--line)}
+  .toolbar button:hover{border-color:var(--accent)}
+  .toolbar button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .toolbar .spacer{flex:1}
+  .win{max-width:1240px;margin:0 auto 40px;padding:0 24px;
+    background:var(--bg-2);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
+    box-shadow:0 18px 50px rgba(0,0,0,.35)}
+  .titlebar{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--sidebar);
+    border-bottom:1px solid var(--line)}
+  .dot{width:11px;height:11px;border-radius:50%}
+  .dot.r{background:#ff5f57}.dot.y{background:#febc2e}.dot.g{background:#28c840}
+  .titlebar .t{font-size:12.5px;color:var(--fg-dim);margin-left:6px}
+  .body{display:flex;min-height:620px}
+  .side{width:214px;flex:0 0 214px;background:var(--sidebar);border-right:1px solid var(--line);padding:14px 10px}
+  .side .grp{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--fg-mute);
+    margin:12px 8px 6px}
+  .side a{display:block;padding:8px 10px;border-radius:8px;color:var(--fg-dim);text-decoration:none;font-size:13.5px}
+  .side a:hover{background:rgba(255,255,255,.05)}
+  .side a.active{background:var(--accent);color:#fff;font-weight:600}
+  .side .num{display:inline-block;width:20px;color:var(--fg-mute);font-family:var(--mono);font-size:11.5px}
+  .side a.active .num{color:rgba(255,255,255,.75)}
+  .main{flex:1;padding:20px 22px;overflow:hidden}
+  .main h2{margin:0 0 4px;font-size:19px;font-weight:650}
+  .main h3{margin:22px 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.7px;color:var(--fg-mute)}
+  .main .sub{margin:0 0 16px;color:var(--fg-dim);font-size:13.5px;line-height:1.5}
+  .row{display:grid;grid-template-columns:230px 1fr;gap:8px 16px;align-items:center;
+    padding:11px 14px;background:var(--card);border:1px solid var(--line);border-radius:10px}
+  .row .k{font-size:13.5px;color:var(--fg-dim)}
+  .row .v{font-size:13.5px;text-align:right;font-family:var(--mono);word-break:break-all}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .card .sh{font-size:13.5px;font-weight:600;margin-bottom:4px}
+  .card .sd{font-size:12.5px;color:var(--fg-dim);line-height:1.5}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.input{background:var(--bg);border:1px solid var(--line);border-radius:8px;
+    padding:8px 11px;font-size:13px;font-family:var(--mono);color:var(--fg);min-height:36px;
+    display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .input .ph{color:var(--fg-mute)}
+  .input button{background:none;border:none;color:var(--accent);cursor:pointer;font:inherit;font-size:12.5px}
+  .tag{display:inline-block;padding:3px 9px;border-radius:20px;font-size:12px;font-weight:600}
+  .tag.ok{background:rgba(38,162,105,.18);color:#7ee2a8}
+  .tag.warn{background:rgba(229,165,10,.18);color:#ffd166}
+  .tag.err{background:rgba(192,28,40,.2);color:#ff9aa2}
+  .tag.info{background:rgba(53,132,228,.2);color:#9ecbff}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;font-size:12px;
+    background:var(--bg);border:1px solid var(--line);color:var(--fg-dim)}
+  .badge .d{width:7px;height:7px;border-radius:50%}
+  .d.ok{background:var(--ok)} .d.no{background:var(--err)} .d.opt{background:var(--warn)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-size:13.5px;font-weight:600;
+    padding:10px 18px;border-radius:9px;cursor:pointer;border:1px solid transparent}
+  .btn.primary{background:var(--accent);color:#fff}
+  .btn.ghost{background:transparent;border-color:var(--line);color:var(--fg)}
+  .btn.danger{background:var(--err);color:#fff}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .actions{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}
+  .bar{height:8px;border-radius:20px;background:var(--bg);overflow:hidden;border:1px solid var(--line)}
+  .bar>i{display:block;height:100%;background:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--fg-mute);
+    padding:6px 10px;border-bottom:1px solid var(--line)}
+  td{padding:9px 10px;border-bottom:1px solid var(--line);color:var(--fg-dim)}
+  td.mono,th.mono{font-family:var(--mono);font-size:12.5px}
+  .alert{display:flex;gap:11px;padding:12px 14px;border-radius:10px;align-items:flex-start;margin-bottom:16px}
+  .alert.warn{background:rgba(229,165,10,.13);border:1px solid rgba(229,165,10,.4)}
+  .alert.info{background:rgba(53,132,228,.13);border:1px solid rgba(53,132,228,.4)}
+  .alert.err{background:rgba(192,28,40,.13);border:1px solid rgba(192,28,40,.4)}
+  .alert .ico{font-size:15px;line-height:1.3}
+  .alert .tt{font-size:13.5px;font-weight:650;margin-bottom:2px}
+  .alert .bd{font-size:12.5px;color:var(--fg-dim);line-height:1.5}
+  .steps{display:flex;gap:0;margin:0 0 18px;flex-wrap:wrap}
+  .step{flex:1;min-width:96px;padding:9px 8px;text-align:center;font-size:12px;color:var(--fg-mute);
+    border-bottom:3px solid var(--line)}
+  .step.done{color:var(--fg-dim);border-bottom-color:var(--ok)}
+  .step.cur{color:var(--fg);border-bottom-color:var(--accent);font-weight:650}
+.log{font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--fg-dim);
+    background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;max-height:210px;overflow:auto}
+  .log .ok{color:#7ee2a8}.log .w{color:#ffd166}.log .e{color:#ff9aa2}.log .i{color:#9ecbff}
+  .chk{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bg);
+    border:1px solid var(--line);border-radius:9px;font-size:13px}
+  .box{width:17px;height:17px;border-radius:5px;border:1.5px solid var(--line);flex:0 0 17px;
+    display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff}
+  .box.on{background:var(--accent);border-color:var(--accent)}
+  .box.warnc{background:var(--warn);border-color:var(--warn)}
+  .checks{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-family:var(--mono);font-size:12px;color:var(--fg-dim)}
+  .flow .n{padding:5px 11px;background:var(--bg);border:1px solid var(--line);border-radius:7px}
+  .flow .a{color:var(--accent)}
+  .kb{display:grid;grid-template-columns:150px 1fr;gap:6px 14px;font-size:12.5px;color:var(--fg-dim)}
+  kbd{font-family:var(--mono);font-size:11.5px;background:var(--bg);border:1px solid var(--line);
+    border-bottom-width:2px;border-radius:5px;padding:2px 6px}
+  .screen{display:none}
+  .screen.active{display:block}
+  .pane{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+  .note{font-size:12.5px;color:var(--fg-mute);margin-top:14px;line-height:1.55}
+  .note code{font-family:var(--mono);color:var(--fg-dim)}
+  .lbl{font-size:13.5px;color:var(--fg-dim);margin-bottom:5px}
+</style>
+</head>
+<body>
+
+<div class="meta">
+  <h1>Migration Master — макет интерфейса</h1>
+  <p>Визуализация GTK4 / libadwaita мастера миграции пользователя для РЕД ОС Linux. Реализовано в <code>src/ui/gtk_app.rs</code>.</p>
+  <div class="note">
+    Макет отражает реальные виджеты приложения: <b>adw::NavigationView</b> + <b>adw::ToolbarView</b> + <b>HeaderBar</b>,
+    группы <b>adw::PreferencesGroup</b>/<b>ActionRow</b>, <b>gtk::ProgressBar</b>. Панели сверху и слева — служебные, только для анализа макета.
+  </div>
+</div>
+
+<div class="toolbar">
+  <button data-s="home" class="on">Главный экран</button>
+  <button data-s="create">Создать архив</button>
+  <button data-s="ssh">Перенос по SSH</button>
+  <button data-s="restore">Восстановление</button>
+  <button data-s="history">История</button>
+  <button data-s="diag">Диагностика</button>
+  <button data-s="report">Отчёт</button>
+  <span class="spacer"></span>
+  <button id="theme">Светлая тема</button>
+</div>
+
+<div class="win">
+  <div class="titlebar">
+    <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+    <div class="t">Мастер миграции пользователя</div>
+  </div>
+  <div class="body">
+    <div class="side">
+      <div class="grp">Сценарии</div>
+      <a href="#" data-g="home"><span class="num">&rsaquo;</span>Главный экран</a>
+      <a href="#" data-g="create"><span class="num">1</span>Создать архив</a>
+      <a href="#" data-g="ssh"><span class="num">2</span>Перенос по SSH</a>
+      <a href="#" data-g="restore"><span class="num">3</span>Восстановление</a>
+      <div class="grp">Данные</div>
+      <a href="#" data-g="history"><span class="num">&rsaquo;</span>История операций</a>
+      <a href="#" data-g="diag"><span class="num">&rsaquo;</span>Настройки и диагностика</a>
+      <a href="#" data-g="report"><span class="num">&rsaquo;</span>Итоговый отчёт</a>
+    </div>
+    <div class="main">
+<section id="home" class="screen active">
+        <h2>Migration Master</h2>
+        <p class="sub">Безопасный перенос пользовательского профиля. Данные не покидают локальную сеть.</p>
+
+        <div class="alert warn">
+          <div class="ico">&#9888;</div>
+          <div>
+            <div class="tt">Внимание</div>
+            <div class="bd">zstd не найден (обязателен для миграции) &mdash; установите пакет <code>zstd</code>, иначе создание архива недоступно.</div>
+          </div>
+        </div>
+
+        <h3>Система</h3>
+        <div class="row"><span class="k">Пользователь</span><span class="v">asaprocky</span></div><br>
+        <div class="row"><span class="k">Компьютер</span><span class="v">workstation-red</span></div><br>
+        <div class="row"><span class="k">Операционная система</span><span class="v">РЕД ОС 7.3</span></div><br>
+        <div class="row"><span class="k">Архитектура</span><span class="v">x86_64</span></div><br>
+        <div class="row"><span class="k">Домашний каталог</span><span class="v">/home/asaprocky</span></div><br>
+        <div class="row"><span class="k">Размер профиля</span><span class="v">12.4 GiB (184 320 файлов)</span></div><br>
+        <div class="row"><span class="k">Свободно на диске</span><span class="v">186.2 GiB</span></div>
+
+        <h3>Действия</h3>
+        <div class="grid2">
+          <div class="card">
+            <div class="sh">Создать архив профиля</div>
+            <div class="sd">Зашифрованный архив <code>.rmm</code> для переноса на другой компьютер</div>
+          </div>
+          <div class="card">
+            <div class="sh">Перенести с другого компьютера</div>
+            <div class="sd">Прямая миграция по SSH</div>
+          </div>
+          <div class="card">
+            <div class="sh">Восстановить из архива</div>
+            <div class="sd">Распаковать профиль из файла <code>.rmm</code></div>
+          </div>
+          <div class="card">
+            <div class="sh">История операций</div>
+            <div class="sd">Последние миграции из локальной базы SQLite</div>
+          </div>
+          <div class="card">
+            <div class="sh">Настройки и диагностика</div>
+            <div class="sd">Пути, доступные инструменты, готовность PolicyKit</div>
+          </div>
+        </div>
+        <p class="note">Пять карточек соответствуют <code>action_row()</code> в <code>home_page()</code>; переход выполняется через <code>nav.push()</code>.</p>
+      </section>
+<section id="create" class="screen">
+        <div class="steps">
+          <div class="step cur">1 &middot; Параметры</div>
+          <div class="step">2 &middot; Компоненты</div>
+          <div class="step">3 &middot; Запуск</div>
+          <div class="step">4 &middot; Выполнение</div>
+          <div class="step">5 &middot; Отчёт</div>
+        </div>
+        <h2>Создать архив профиля</h2>
+        <p class="sub">Локальный режим: упаковка профиля в зашифрованный архив <code>.rmm</code>.</p>
+
+        <h3>Параметры архива</h3>
+        <div class="card">
+          <div style="display:grid;gap:12px">
+            <div><div class="lbl">Домашний каталог</div>
+              <div class="input">/home/asaprocky</div></div>
+            <div><div class="lbl">Файл архива (.rmm)</div>
+              <div class="input"><span>/home/asaprocky/profile.rmm</span><button>Выбрать&hellip;</button></div></div>
+            <div><div class="lbl">Пароль шифрования (не сохраняется)</div>
+              <div class="input"><span class="ph">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span><button>показать</button></div></div>
+            <div><div class="lbl">Уровень сжатия zstd</div>
+              <div class="input">3 <span class="ph">(0&ndash;22, выше = меньше)</span></div></div>
+          </div>
+        </div>
+
+        <h3>Компоненты</h3>
+        <div class="checks">
+          <div class="chk"><span class="box on">&check;</span>Файлы рабочего стола</div>
+          <div class="chk"><span class="box on">&check;</span>Документы</div>
+          <div class="chk"><span class="box on">&check;</span>Загрузки</div>
+          <div class="chk"><span class="box on">&check;</span>Изображения</div>
+          <div class="chk"><span class="box on">&check;</span>Видео</div>
+          <div class="chk"><span class="box on">&check;</span>Музыка</div>
+          <div class="chk"><span class="box on">&check;</span>Шаблоны</div>
+          <div class="chk"><span class="box warnc">!</span>SSH-ключи <span class="tag warn">нужно согласие</span></div>
+          <div class="chk"><span class="box"></span>Настройки приложений</div>
+          <div class="chk"><span class="box"></span>Системные настройки</div>
+        </div>
+
+        <h3>Параметры запуска</h3>
+        <div class="card">
+          <div class="chk"><span class="box on">&check;</span>
+            <div><div>Пробный запуск (dry-run)</div>
+            <div class="sd">Просканировать профиль без создания файла</div></div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary">Создать архив</button>
+          <button class="btn ghost">Оценить (dry-run)</button>
+          <button class="btn ghost">Отмена</button>
+        </div>
+        <p class="note">Приватные SSH-ключи по умолчанию <b>не</b> переносятся: нужен явный флаг <code>include_private_ssh_keys</code>. Пароль не сохраняется ни в конфигурации, ни в SQLite-истории, ни в журналах.</p>
+      </section>
+<section id="ssh" class="screen">
+        <h2>Перенос по SSH</h2>
+        <p class="sub">Прямая миграция на старый компьютер по протоколу SSH.</p>
+
+        <div class="alert info">
+          <div class="ico">&#128274;</div>
+          <div>
+            <div class="tt">Проверка host key</div>
+            <div class="bd">Перед подключением сверьте отпечаток узла. Проверка host key не отключается автоматически.</div>
+          </div>
+        </div>
+
+        <h3>Подключение к старому компьютеру</h3>
+        <div class="card">
+          <div style="display:grid;gap:12px">
+            <div><div class="lbl">Адрес (пользователь@хост[:порт])</div>
+              <div class="input"><span>user@192.168.1.10:22</span></div></div>
+            <div><div class="lbl">Домашний каталог на удалённом хосте</div>
+              <div class="input"><span class="ph">~/</span></div></div>
+          </div>
+        </div>
+
+        <h3>Параметры</h3>
+        <div class="card">
+          <div class="chk"><span class="box on">&check;</span>
+            <div><div>Пробный запуск (dry-run)</div>
+            <div class="sd">Проверить соединение и план без передачи</div></div>
+          </div>
+        </div>
+
+        <h3>Поток операции</h3>
+        <div class="flow">
+          <span class="n">проверка соединения</span><span class="a">&rarr;</span>
+          <span class="n">анализ диска</span><span class="a">&rarr;</span>
+          <span class="n">rsync / tar</span><span class="a">&rarr;</span>
+          <span class="n">SHA-256</span><span class="a">&rarr;</span>
+          <span class="n">атомарная замена</span>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary">Начать перенос</button>
+          <button class="btn ghost">Отмена</button>
+        </div>
+        <p class="note">Долгая операция выполняется в фоновом потоке, интерфейс не блокируется; прогресс обновляется через <code>gtk::ProgressBar</code> и таймер GLib.</p>
+      </section>
+<section id="restore" class="screen">
+        <h2>Восстановить из архива</h2>
+        <p class="sub">Распаковка профиля в целевой каталог с проверкой хешей и резервной копией.</p>
+
+        <h3>Источник и назначение</h3>
+        <div class="card">
+          <div style="display:grid;gap:12px">
+            <div><div class="lbl">Файл архива (.rmm)</div>
+              <div class="input"><span>/media/usb/profile.rmm</span><button>Выбрать&hellip;</button></div></div>
+            <div><div class="lbl">Каталог восстановления</div>
+              <div class="input"><span>/home/asaprocky</span><button>Выбрать&hellip;</button></div></div>
+            <div><div class="lbl">Пароль шифрования (если есть)</div>
+              <div class="input"><span class="ph">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span><button>показать</button></div></div>
+            <div><div class="lbl">Стратегия конфликтов</div>
+              <div class="input"><span>Спрашивать для каждого файла</span><span class="ph">&#9660;</span></div></div>
+          </div>
+        </div>
+
+        <h3>Стратегии разрешения конфликтов</h3>
+        <table>
+          <tr><th>Стратегия</th><th>Поведение</th></tr>
+          <tr><td class="mono">ask</td><td>Спрашивать решение для каждого файла</td></tr>
+          <tr><td class="mono">skip</td><td>Оставить существующий файл без изменений</td></tr>
+          <tr><td class="mono">replace</td><td>Заменить существующий файл данными из архива</td></tr>
+          <tr><td class="mono">keep-both</td><td>Сохранить оба файла (существующий получит суффикс)</td></tr>
+          <tr><td class="mono">rename-old</td><td>Переименовать существующий файл в <code>.old</code></td></tr>
+          <tr><td class="mono">newer</td><td>Заменять только если данные в архиве новее</td></tr>
+        </table>
+
+        <h3>Параметры</h3>
+        <div class="pane">
+          <div class="card"><div class="chk"><span class="box on">&check;</span>Проверять хеши после восстановления</div></div>
+          <div class="card"><div class="chk"><span class="box"></span>Пробный запуск (dry-run)</div></div>
+        </div>
+
+        <h3>Прогресс</h3>
+        <div class="bar"><i style="width:42%"></i></div>
+        <p class="note" style="margin-top:8px">42% &mdash; /home/asaprocky/Documents/отчёт.docx</p>
+
+        <div class="actions">
+          <button class="btn primary">Восстановить</button>
+          <button class="btn danger">Отменить операцию</button>
+        </div>
+        <p class="note">Все пути проверяются на выход за пределы целевого каталога (path traversal). Перед перезаписью создаётся резервная копия.</p>
+      </section>
+<section id="history" class="screen">
+        <h2>История операций</h2>
+        <p class="sub">Локальная база SQLite: <code>~/.local/share/migration-master/migrations.db</code></p>
+
+        <table>
+          <tr><th>Дата</th><th>Операция</th><th>Источник</th><th class="mono">Файлов</th><th class="mono">Размер</th><th>Статус</th></tr>
+          <tr><td>2026-10-04 16:13</td><td>Локальный архив</td><td class="mono">/home/asaprocky</td><td class="mono">184 320</td><td class="mono">12.4 GiB</td><td><span class="tag ok">успешно</span></td></tr>
+          <tr><td>2026-10-03 11:02</td><td>Восстановление</td><td class="mono">/media/usb/profile.rmm</td><td class="mono">184 318</td><td class="mono">12.4 GiB</td><td><span class="tag ok">успешно</span></td></tr>
+          <tr><td>2026-10-02 09:47</td><td>SSH миграция</td><td class="mono">user@10.0.0.5</td><td class="mono">92 118</td><td class="mono">6.1 GiB</td><td><span class="tag warn">с ошибками</span></td></tr>
+          <tr><td>2026-10-01 18:20</td><td>Сканирование</td><td class="mono">/home/asaprocky</td><td class="mono">&mdash;</td><td class="mono">12.4 GiB</td><td><span class="tag info">завершено</span></td></tr>
+          <tr><td>2026-09-30 14:05</td><td>Локальный архив</td><td class="mono">/home/asaprocky</td><td class="mono">40 211</td><td class="mono">3.2 GiB</td><td><span class="tag err">отменено</span></td></tr>
+        </table>
+
+        <div class="actions">
+          <button class="btn ghost">Отчёт JSON</button>
+          <button class="btn ghost">Отчёт HTML</button>
+          <button class="btn ghost">Отчёт TXT</button>
+          <button class="btn ghost">Открыть каталог отчётов</button>
+        </div>
+        <p class="note">Хранятся дата, тип, источник, цель, статус, длительность, число файлов, размер и путь к отчёту. Пароли, passphrase и содержимое приватных ключей не сохраняются.</p>
+      </section>
+<section id="diag" class="screen">
+        <h2>Настройки и диагностика</h2>
+        <p class="sub">Готовность окружения перед началом миграции.</p>
+
+        <h3>Внешние инструменты</h3>
+        <table>
+          <tr><th>Инструмент</th><th>Состояние</th><th>Назначение</th></tr>
+          <tr><td class="mono">ssh</td><td><span class="badge"><span class="d ok"></span>доступен</span></td><td>Прямая миграция</td></tr>
+          <tr><td class="mono">tar</td><td><span class="badge"><span class="d ok"></span>доступен</span></td><td>Упаковка архива</td></tr>
+          <tr><td class="mono">zstd</td><td><span class="badge"><span class="d ok"></span>доступен</span></td><td>Сжатие</td></tr>
+          <tr><td class="mono">rsync</td><td><span class="badge"><span class="d opt"></span>не найден</span></td><td>Ускоренная передача (резерв &mdash; tar через SSH)</td></tr>
+          <tr><td class="mono">age</td><td><span class="badge"><span class="d ok"></span>встроен в бинарник</span></td><td>Шифрование</td></tr>
+          <tr><td class="mono">lpstat</td><td><span class="badge"><span class="d ok"></span>доступен</span></td><td>Перенос принтеров CUPS</td></tr>
+          <tr><td class="mono">pkexec</td><td><span class="badge"><span class="d ok"></span>доступен</span></td><td>Привилегированные операции</td></tr>
+        </table>
+
+        <h3>Привилегированные операции</h3>
+        <div class="alert info">
+          <div class="ico">&#128737;</div>
+          <div>
+            <div class="tt">PolicyKit готов</div>
+            <div class="bd">Приложение не запускается от root. Отдельный помощник <code>migration-master-helper</code> выполняет только операции из белого списка.</div>
+          </div>
+        </div>
+        <table>
+          <tr><th>Разрешённое действие</th><th>Операция</th></tr>
+          <tr><td class="mono">&hellip;helper.install-packages</td><td>Установка RPM через dnf</td></tr>
+          <tr><td class="mono">&hellip;helper.configure-printers</td><td>Восстановление системных принтеров</td></tr>
+          <tr><td class="mono">&hellip;helper.apply-system-settings</td><td>Безопасные системные параметры</td></tr>
+        </table>
+
+        <h3>Пути</h3>
+        <div class="row"><span class="k">Настройки</span><span class="v">/home/asaprocky/.config/migration-master</span></div><br>
+        <div class="row"><span class="k">Данные</span><span class="v">/home/asaprocky/.local/share/migration-master</span></div><br>
+        <div class="row"><span class="k">База истории</span><span class="v">&hellip;/migration-master/migrations.db</span></div><br>
+        <div class="row"><span class="k">Журнал</span><span class="v">&hellip;/migration-master/logs/migration-master.log</span></div>
+
+        <h3>О программе</h3>
+        <div class="row"><span class="k">Приложение</span><span class="v">Migration Master 0.1.0</span></div><br>
+        <div class="row"><span class="k">Идентификатор</span><span class="v">com.redos.migration-master</span></div>
+      </section>
+<section id="report" class="screen">
+        <h2>Итоговый отчёт</h2>
+        <p class="sub">Формируется после каждой операции. Форматы: JSON, HTML, TXT, PDF.</p>
+
+        <div class="alert warn">
+          <div class="ico">&#9888;</div>
+          <div>
+            <div class="tt">Конфликт разрешён стратегией rename-old</div>
+            <div class="bd">3 файла сохранены как <code>*.old</code>. Резервная копия создана до начала операции.</div>
+          </div>
+        </div>
+
+        <h3>Статистика</h3>
+        <div class="grid2">
+          <div class="row"><span class="k">Перенесено файлов</span><span class="v">184 320</span></div>
+          <div class="row"><span class="k">Перенесено данных</span><span class="v">12.4 GiB</span></div>
+          <div class="row"><span class="k">Пропущено</span><span class="v">12</span></div>
+          <div class="row"><span class="k">Разрешено конфликтов</span><span class="v">3</span></div>
+          <div class="row"><span class="k">Проверено хешей</span><span class="v">184 320</span></div>
+          <div class="row"><span class="k">Длительность</span><span class="v">42 мин 18 с</span></div>
+        </div>
+
+        <h3>Журнал операций</h3>
+        <div class="log">
+<span class="i">[16:13:28]</span> Сканирование профиля: 184 320 файлов, 12.4 GiB<br>
+<span class="i">[16:13:31]</span> Исключено по правилам: 8 421 (кэш, Trash, lock-файлы)<br>
+<span class="w">[16:14:02]</span> Приватные SSH-ключи не включены — только по явному согласию<br>
+<span class="ok">[16:14:05]</span> Резервная копия: backup/20261004-161405-a3f9.backup.tar.zst<br>
+<span class="i">[16:14:09]</span> Запись архива: profile.rmm.part (zstd, уровень 3)<br>
+<span class="ok">[16:55:48]</span> Контрольная сумма SHA-256 совпала<br>
+<span class="e">[16:55:49]</span> 3 конфликта: сохранены как *.old (rename-old)<br>
+<span class="ok">[16:56:00]</span> Готово. Отчёт: report-7d2f1c9a.json
+        </div>
+
+        <h3>Быстрые клавиши</h3>
+        <div class="kb">
+          <kbd>Ctrl+C</kbd><span>отмена длительной операции</span>
+          <kbd>Ctrl+W</kbd><span>закрыть окно мастера</span>
+          <kbd>Ctrl+Q</kbd><span>выход из приложения</span>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary">Открыть отчёт</button>
+          <button class="btn ghost">Скопировать ошибку</button>
+          <button class="btn ghost">Открыть подробный журнал</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  // Переключение экранов макета
+  var screens  = document.querySelectorAll('.screen');
+  var sideLink = document.querySelectorAll('.side a');
+  var topBtn   = document.querySelectorAll('.toolbar button[data-s]');
+
+  function show(id){
+    screens.forEach(function(s){ s.classList.toggle('active', s.id === id); });
+    sideLink.forEach(function(a){ a.classList.toggle('active', a.dataset.g === id); });
+    topBtn.forEach(function(b){ b.classList.toggle('on', b.dataset.s === id); });
+  }
+  sideLink.forEach(function(a){
+    a.addEventListener('click', function(e){ e.preventDefault(); show(a.dataset.g); });
+  });
+  topBtn.forEach(function(b){
+    b.addEventListener('click', function(){ show(b.dataset.s); });
+  });
+
+  // Светлая / тёмная тема
+  var themeBtn = document.getElementById('theme');
+  themeBtn.addEventListener('click', function(){
+    var light = document.documentElement.classList.toggle('light');
+    themeBtn.textContent = light ? 'Тёмная тема' : 'Светлая тема';
+  });
+</script>
+</body>
+</html>
