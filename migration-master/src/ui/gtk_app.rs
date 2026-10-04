@@ -393,6 +393,10 @@ fn bind_create_action(
     let compression = (*compression).clone();
     let dry_check = (*dry_check).clone();
 
+    // connect_clicked() заимствует кнопку, поэтому замыкание должно захватывать
+    // собственную копию — иначе "cannot move out of `run_button`".
+    let button = run_button.clone();
+
     run_button.connect_clicked(move |_| {
         let source_home = PathBuf::from(home_entry.text().to_string());
         let output = PathBuf::from(output_entry.text().to_string());
@@ -437,10 +441,10 @@ fn bind_create_action(
             return;
         }
 
-        run_button.set_sensitive(false);
+        button.set_sensitive(false);
         status.set_text("Сканирование профиля…");
         let window_done = window.clone();
-        let button_done = run_button.clone();
+        let button_done = button.clone();
         spawn_task(
             &progress,
             &status,
@@ -585,6 +589,8 @@ fn bind_restore_action(
     let verify_check = (*verify_check).clone();
     let dry_check = (*dry_check).clone();
 
+    let button = run_button.clone();
+
     run_button.connect_clicked(move |_| {
         let archive = PathBuf::from(archive_entry.text().to_string());
         let target_root = PathBuf::from(target_entry.text().to_string());
@@ -617,10 +623,10 @@ fn bind_restore_action(
             return;
         }
 
-        run_button.set_sensitive(false);
+        button.set_sensitive(false);
         status.set_text("Восстановление…");
         let window_done = window.clone();
-        let button_done = run_button.clone();
+        let button_done = button.clone();
         spawn_task(
             &progress,
             &status,
@@ -756,6 +762,8 @@ fn bind_ssh_action(
     let remote_entry = (*remote_entry).clone();
     let dry_check = (*dry_check).clone();
 
+    let button = run_button.clone();
+
     run_button.connect_clicked(move |_| {
         let Some((user, host, port)) = parse_ssh_target(&target_entry.text()) else {
             show_message(
@@ -794,10 +802,10 @@ fn bind_ssh_action(
         wizard_config.cancel = Some(crate::cancel::global());
         wizard_config.database_path = config::load_config().ok().map(|cfg| cfg.database_path);
 
-        run_button.set_sensitive(false);
+        button.set_sensitive(false);
         status.set_text("Подключение и передача…");
         let window_done = window.clone();
-        let button_done = run_button.clone();
+        let button_done = button.clone();
         spawn_task(
             &progress,
             &status,
