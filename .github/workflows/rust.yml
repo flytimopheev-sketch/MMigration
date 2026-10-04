@@ -17,6 +17,16 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # GTK4/libadwaita нужны только для сборки GUI (--features gui).
+    # Без libgirepository1.0-dev / libgtk-4-dev падает сборка gobject-sys:
+    # "Package gobject-2.0 was not found in the pkg-config search path".
+    - name: Установить системные зависимости GTK4
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libgtk-4-dev libadwaita-1-dev libglib2.0-dev libgirepository1.0-dev \
+          libpango1.0-dev libcairo2-dev libssl-dev pkg-config
+
     # Проект лежит в подкаталоге migration-master/ — Cargo.toml в корне нет.
     - name: Проверка форматирования
       working-directory: migration-master

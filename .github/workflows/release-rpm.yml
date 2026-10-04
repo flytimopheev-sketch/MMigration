@@ -37,7 +37,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm build-essential pkg-config \
-            libgtk-4-dev libadwaita-1-dev libsqlite3-dev libcups2-dev zstd
+            libgtk-4-dev libadwaita-1-dev libglib2.0-dev libgirepository1.0-dev \
+            libpango1.0-dev libcairo2-dev libssl-dev \
+            libsqlite3-dev libcups2-dev zstd
 
       - name: Установить Rust toolchain
         run: |
