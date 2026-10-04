@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Migration Master">
+  <title>Migration Master</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c62828"/>
+      <stop offset="100%" stop-color="#8e0000"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Скруглённый фон -->
+  <rect x="4" y="4" width="120" height="120" rx="24" ry="24" fill="url(#bg)"/>
+
+  <!-- Старый компьютер (слева) -->
+  <rect x="20" y="34" width="34" height="26" rx="4" fill="#ffffff" opacity="0.92"/>
+  <rect x="26" y="40" width="22" height="14" rx="2" fill="#c62828"/>
+  <rect x="30" y="64" width="14" height="4" rx="2" fill="#ffffff" opacity="0.92"/>
+
+  <!-- Стрелка переноса -->
+  <path d="M58 47 h20 M70 39 l10 8 l-10 8" fill="none" stroke="#ffffff"
+        stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+
+  <!-- Новый компьютер (справа) -->
+  <rect x="74" y="34" width="34" height="26" rx="4" fill="#ffffff" opacity="0.92"/>
+  <rect x="80" y="40" width="22" height="14" rx="2" fill="#c62828"/>
+
+  <!-- Коробка профиля (снизу) -->
+  <path d="M64 74 L44 86 v18 l20 12 l20 -12 V86 Z" fill="#ffffff" opacity="0.95"/>
+  <path d="M44 86 l20 12 l20 -12" fill="none" stroke="#c62828" stroke-width="3"
+        stroke-linejoin="round"/>
+  <path d="M64 98 v18" fill="none" stroke="#c62828" stroke-width="3"/>
+</svg>

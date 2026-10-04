@@ -139,5 +139,57 @@ mod tests {
             .iter()
             .any(|arg| arg.ends_with("com.redos.migration-master.policy")));
     }
+
+    /// Файл политики в `resources/` обязан совпадать с тем, что генерирует
+    /// `render_policy()`, иначе установка пакета поставит устаревшие действия.
+    #[test]
+    fn test_shipped_policy_matches_render() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/com.redos.migration-master.policy");
+        let shipped = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("не удалось прочитать {}: {}", path.display(), error));
+
+        assert_eq!(
+            shipped,
+            PolkitManager::render_policy(),
+            "resources/com.redos.migration-master.policy устарел — перегенерируйте его через \
+             PolkitManager::render_policy()"
+        );
+    }
+
+    /// Перегенерировать файл политики из `render_policy()` (эталон формата).
+    ///
+    /// Запуск вручную: `cargo test --lib update_shipped_policy -- --ignored`
+    #[test]
+    #[ignore = "вспомогательная генерация ресурса"]
+    fn update_shipped_policy() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/com.redos.migration-master.policy");
+        std::fs::write(&path, PolkitManager::render_policy())
+            .unwrap_or_else(|error| panic!("не удалось записать {}: {}", path.display(), error));
+    }
+
+    /// Политика должна содержать только действия из белого списка.
+    #[test]
+    fn test_shipped_policy_action_ids_are_whitelisted() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/com.redos.migration-master.policy");
+        let shipped = std::fs::read_to_string(&path).expect("политика должна существовать");
+
+        let ids: Vec<&str> = shipped
+            .lines()
+            .filter_map(|line| line.trim().split("id=\"").nth(1))
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
+
+        assert_eq!(ids.len(), ALLOWED_ACTIONS.len());
+        for id in ids {
+            assert!(
+                PolkitManager::is_action_allowed(id),
+                "политика содержит действие вне белого списка: {}",
+                id
+            );
+        }
+    }
 }
 

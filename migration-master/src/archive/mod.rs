@@ -870,6 +870,21 @@ fn create_symlink(target: &Path, destination: &Path) -> Result<()> {
 }
 
 
+/// Ближайший существующий каталог для `path` (сам путь либо его родитель).
+///
+/// Нужен для оценки свободного места в dry-run, когда целевой каталог ещё
+/// не создан: `free_space` для несуществующего пути вернул бы 0.
+fn nearest_existing_ancestor(path: &Path) -> PathBuf {
+    let mut current = path.to_path_buf();
+    while !current.is_dir() {
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    current
+}
+
 impl ArchiveManager {
     /// Восстановить архив в целевой каталог.
     pub fn restore(
@@ -885,8 +900,14 @@ impl ArchiveManager {
         };
         let required: u64 = wanted.iter().map(|file| file.size).sum();
 
-        std::fs::create_dir_all(&options.target_root)?;
-        file_transfer::ensure_space(&options.target_root, required)?;
+        // Dry-run не должен оставлять следов: каталог назначения не создаётся.
+        // Проверка места идёт по ближайшему существующему родителю.
+        if options.dry_run {
+            file_transfer::ensure_space(&nearest_existing_ancestor(&options.target_root), required)?;
+        } else {
+            std::fs::create_dir_all(&options.target_root)?;
+            file_transfer::ensure_space(&options.target_root, required)?;
+        }
 
         let (source_path, _keep) =
             Self::prepare_source(&options.archive, options.passphrase.as_deref())?;
@@ -1154,6 +1175,33 @@ mod tests {
         let result = ArchiveManager::restore(&restore, &NoProgress).expect("restore dry");
         assert_eq!(result.restored_files, 2);
         assert!(!target.join("Documents/report.txt").exists());
+        // Dry-run не должен оставлять следов: целевой каталог не создаётся.
+        assert!(
+            !target.exists(),
+            "dry-run создал каталог назначения: {}",
+            target.display()
+        );
+        assert!(result.errors.is_empty(), "ошибки dry-run: {:?}", result.errors);
+    }
+
+    /// Проверка свободного места в dry-run работает по существующему родителю
+    /// даже когда целевой каталог ещё не создан.
+    #[test]
+    fn test_dry_run_space_check_uses_existing_ancestor() {
+        let dir = tempdir().expect("tempdir");
+        let home = make_home(dir.path());
+        let output = dir.path().join("profile.rmm");
+        ArchiveManager::create(&create_options(&home, &output, None), &NoProgress)
+            .expect("create");
+
+        let target = dir.path().join("missing-parent").join("target");
+        let mut restore = restore_options(&output, &target);
+        restore.dry_run = true;
+
+        let result = ArchiveManager::restore(&restore, &NoProgress).expect("dry-run");
+        assert_eq!(result.restored_files, 2);
+        assert!(!target.exists());
+        assert!(!target.parent().expect("parent").exists());
     }
 
     #[test]

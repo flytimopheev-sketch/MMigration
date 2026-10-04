@@ -1,27 +1,40 @@
-//! GTK4-интерфейс (мастер переноса). Требует фичу `gui`.
+//! Графический интерфейс (GTK4 + libadwaita) и данные главного экрана.
+//!
+//! GTK-код собирается только для Linux с включённой фичей `gui`. На остальных
+//! платформах и без фичи модуль предоставляет данные главного экрана
+//! (`main_screen`) и возвращает понятную ошибку при попытке запуска GUI.
 
-use crate::error::{MigrationError, Result};
-use crate::wizard::{MigrationWizard, WizardStage};
+pub mod main_screen;
+pub mod util;
+
+#[cfg(all(feature = "gui", target_os = "linux"))]
+mod gtk_app;
+
+use crate::error::Result;
 
 /// Доступен ли графический интерфейс в этой сборке.
 pub fn gui_available() -> bool {
-    cfg!(feature = "gui")
+    cfg!(all(feature = "gui", target_os = "linux"))
 }
 
 /// Запустить графический мастер переноса.
-pub fn run_gui(_wizard: &MigrationWizard) -> Result<WizardStage> {
-    #[cfg(feature = "gui")]
+///
+/// На РЕД ОС (Linux) проект собирается с фичей `gui` (`cargo build --features gui`);
+/// в этом случае открывается окно мастера. Иначе возвращается понятная ошибка
+/// с подсказкой использовать консольный режим.
+pub fn run_gui() -> Result<()> {
+    #[cfg(all(feature = "gui", target_os = "linux"))]
     {
-        // TODO(gtk): подключить страницы мастера к wizard API.
-        Err(MigrationError::Unsupported(
-            "GTK4-мастер пока не подключён; используйте консольный режим".to_string(),
-        ))
+        gtk_app::run()
     }
 
-    #[cfg(not(feature = "gui"))]
+    #[cfg(not(all(feature = "gui", target_os = "linux")))]
     {
-        Err(MigrationError::Unsupported(
-            "графический интерфейс не включён (соберите с фичей `gui`)".to_string(),
+        Err(crate::error::MigrationError::Unsupported(
+            "графический интерфейс недоступен: соберите проект на Linux с фичей `gui` \
+             (cargo build --features gui) или используйте консольный режим"
+                .to_string(),
         ))
     }
 }
+

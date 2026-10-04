@@ -1,0 +1,33 @@
+# Пример конфигурации Migration Master (§16).
+#
+# Путь к действующему файлу: `migration-master config path`
+#   (~/.config/migration-master/config.toml).
+#
+# Поля можно менять вручную: отсутствующие поля подставляются автоматически
+# из значений по умолчанию, поэтому неполный файл не ломает работу.
+# Посмотреть текущие значения: `migration-master config list`
+# Сброс к значениям по умолчанию:  `migration-master config reset`
+
+# Каталоги и файлы данных приложения
+database_path = "/home/user/.local/share/migration-master/migrations.db"
+log_path = "/home/user/.local/share/migration-master/migration.log"
+temp_dir = "/tmp/migration-master"
+
+# Журналирование
+max_log_size_mb = 10
+history_days = 90
+
+# SSH (прямая миграция)
+ssh_timeout_secs = 30
+ssh_retry_count = 3
+ssh_rate_limit = 0
+ssh_compression = true
+
+# Архивы
+compression_level = 3
+encryption_algorithm = "age"
+auto_backup = true
+
+# Интерфейс
+language = "ru"
+theme = "system"

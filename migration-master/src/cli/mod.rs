@@ -163,6 +163,8 @@ pub enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Запустить графический мастер (GTK4 + libadwaita, требует фичу `gui`)
+    Gui,
     /// Правила миграции настроек приложений (§5)
     AppRules {
         #[command(subcommand)]
@@ -309,6 +311,7 @@ impl Cli {
     /// Выполнить команду.
     pub fn run(self) -> Result<()> {
         match self.command {
+            Commands::Gui => crate::ui::run_gui(),
             Commands::Inspect {
                 archive,
                 passphrase,

@@ -11,7 +11,12 @@ pub const ARCHIVE_FORMAT_VERSION: u32 = 1;
 pub const ARCHIVE_EXTENSION: &str = "rmm";
 
 /// Настройки приложения
+///
+/// `#[serde(default)]` на уровне структуры: отсутствующие поля берутся из
+/// `AppConfig::default()`, поэтому неполный `config.toml` (например, созданный
+/// старой версией или добавленный вручную) не ломает работу приложения.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     /// Путь к базе данных
     pub database_path: PathBuf,
@@ -601,6 +606,55 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let loaded = load_config_from(dir.path().join("nope.toml")).expect("load");
         assert_eq!(loaded.language, "ru");
+    }
+
+    /// Неполный `config.toml` не должен валить чтение: недостающие поля
+    /// дозаполняются значениями по умолчанию (§16 — конфигурация).
+    #[test]
+    fn test_load_partial_config_fills_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("partial.toml");
+        std::fs::write(
+            &path,
+            "history_days = 7\nssh_compression = false\nlanguage = \"ru\"\n",
+        )
+        .expect("write");
+
+        let loaded = load_config_from(&path).expect("частичный конфиг должен читаться");
+        assert_eq!(loaded.history_days, 7);
+        assert!(!loaded.ssh_compression);
+
+        // Незаданные поля — значения по умолчанию.
+        let defaults = AppConfig::default();
+        assert_eq!(loaded.ssh_timeout_secs, defaults.ssh_timeout_secs);
+        assert_eq!(loaded.compression_level, defaults.compression_level);
+        assert_eq!(loaded.database_path, defaults.database_path);
+        assert_eq!(loaded.theme, defaults.theme);
+        assert_eq!(loaded.encryption_algorithm, defaults.encryption_algorithm);
+    }
+
+    /// Ошибочный синтаксис TOML по-прежнему должен возвращать ошибку.
+    #[test]
+    fn test_load_malformed_config_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("broken.toml");
+        std::fs::write(&path, "history_days = not-a-number\n").expect("write");
+        assert!(load_config_from(&path).is_err());
+    }
+
+    /// Пример конфигурации из `resources/examples` должен оставаться валидным.
+    #[test]
+    fn test_example_config_is_valid() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/examples/config.toml");
+        let example = load_config_from(&path)
+            .expect("resources/examples/config.toml должен разбираться");
+        let defaults = AppConfig::default();
+        assert_eq!(example.language, defaults.language);
+        assert_eq!(example.theme, defaults.theme);
+        assert_eq!(example.compression_level, defaults.compression_level);
+        assert_eq!(example.ssh_timeout_secs, defaults.ssh_timeout_secs);
+        assert!(example.history_days > 0);
     }
 }
 

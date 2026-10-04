@@ -1,0 +1,68 @@
+# Пример правил миграции приложений (§5).
+#
+# Формат совпадает с выводом `migration-master app-rules export`.
+# Скопируйте файл в ~/.config/migration-master/app-rules.yaml — он заменит
+# встроенные правила; либо импортируйте напрямую:
+#     migration-master app-rules import путь/к/app-rules.yaml
+#
+# Пути указываются относительно домашнего каталога, допускается префикс `~/`.
+# Не переносите кэш и временные файлы: перечисляйте только профиль и настройки.
+- app_name: "Firefox"
+  config_paths:
+    - "~/.mozilla/firefox"
+  data_paths:
+    - "~/.cache/mozilla/firefox"
+  transfer_mode: "copy"
+  requires_restart: true
+  warnings:
+    - "кэш браузера не переносится автоматически"
+    - "профиль может содержать сохранённые пароли"
+  enabled: true
+
+- app_name: "LibreOffice"
+  config_paths:
+    - "~/.config/libreoffice"
+  data_paths: []
+  transfer_mode: "copy"
+  requires_restart: true
+  warnings: []
+  enabled: true
+
+- app_name: "VS Code / Code-OSS"
+  config_paths:
+    - "~/.config/Code"
+    - "~/.config/Code - OSS"
+    - "~/.vscode"
+  data_paths: []
+  transfer_mode: "copy"
+  requires_restart: true
+  warnings:
+    - "расширения могут быть несовместимы между версиями"
+  enabled: true
+
+# Пример собственного правила с post-migration hook.
+# Хук выполняется ТОЛЬКО после явного подтверждения пользователя
+# (`migration-master app-rules run-hooks --confirm`) и без shell-интерполяции.
+- app_name: "GIMP"
+  config_paths:
+    - "~/.config/GIMP"
+  data_paths:
+    - "~/.local/share/GIMP"
+  transfer_mode: "copy"
+  requires_restart: true
+  min_version: "2.10"
+  warnings:
+    - "после переноса требуется перезапуск приложения"
+  post_migration_hook: "gimp --version"
+  enabled: true
+
+# Отключённое правило: пути исключаются из сканирования.
+- app_name: "Сторонний клиент"
+  config_paths:
+    - "~/.config/some-app"
+  data_paths: []
+  transfer_mode: "copy"
+  requires_restart: false
+  warnings:
+    - "правило отключено администратором"
+  enabled: false

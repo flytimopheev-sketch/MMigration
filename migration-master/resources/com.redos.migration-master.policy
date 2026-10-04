@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<policyconfig xmlns="http://www.freedesktop.org/Standards/PolicyKit/1">
+<vendor>Migration Master</vendor>
+<vendor_url>https://github.com/flytimopheev-sketch/MMigration</vendor_url>
+      <action id="com.redos.migration-master.helper.install-packages">
+        <description>Migration Master: com.redos.migration-master.helper.install-packages</description>
+        <message>Требуются права администратора</message>
+        <defaults><allow_active>auth_admin</allow_active><allow_inactive>auth_admin</allow_inactive></defaults>
+      </action>
+      <action id="com.redos.migration-master.helper.configure-printers">
+        <description>Migration Master: com.redos.migration-master.helper.configure-printers</description>
+        <message>Требуются права администратора</message>
+        <defaults><allow_active>auth_admin</allow_active><allow_inactive>auth_admin</allow_inactive></defaults>
+      </action>
+      <action id="com.redos.migration-master.helper.apply-system-settings">
+        <description>Migration Master: com.redos.migration-master.helper.apply-system-settings</description>
+        <message>Требуются права администратора</message>
+        <defaults><allow_active>auth_admin</allow_active><allow_inactive>auth_admin</allow_inactive></defaults>
+      </action>
+</policyconfig>

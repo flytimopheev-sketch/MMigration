@@ -1,0 +1,9 @@
+# Политика PolicyKit сверяется в тесте с выводом PolkitManager::render_policy()
+# (генерируется с LF). Принудительно фиксируем LF, чтобы на Linux и Windows
+# файл совпадал побайтово и тест проходил.
+migration-master/resources/com.redos.migration-master.policy text eol=lf
+
+# Текстовые ресурсы, читаемые как YAML/TOML — тоже LF для стабильности.
+migration-master/resources/examples/* text eol=lf
+migration-master/src/** text eol=lf
+migration-master/docs/** text eol=lf

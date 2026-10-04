@@ -588,6 +588,37 @@ Name=New
         assert_eq!(parsed[0].enabled, rules[0].enabled);
     }
 
+    /// Пример правил из `resources/examples` должен загружаться так же, как
+    /// пользовательский файл, и содержать корректные пути (§5).
+    #[test]
+    fn test_example_rules_file_is_valid() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/examples/app-rules.yaml");
+        let rules = load_rules_file(&path)
+            .unwrap_or_else(|error| panic!("пример правил не загрузился: {}", error));
+
+        assert!(!rules.is_empty(), "в примере нет правил");
+        for rule in &rules {
+            assert!(!rule.app_name.trim().is_empty(), "правило без имени");
+            assert!(
+                rule.config_paths.iter().chain(rule.data_paths.iter()).any(|p| {
+                    p.starts_with("~/") || p.starts_with('/')
+                }),
+                "правило '{}' не содержит путей относительно HOME",
+                rule.app_name
+            );
+        }
+
+        // Отключённое правило в примере присутствует и остаётся выключенным.
+        let disabled = rules.iter().find(|rule| !rule.enabled);
+        assert!(
+            disabled.is_some(),
+            "в примере нет выключенного правила — его нельзя отключить вручную"
+        );
+        // Hook в примере — только для правила с явным подтверждением.
+        assert!(rules.iter().any(|rule| rule.post_migration_hook.is_some()));
+    }
+
     #[test]
     fn test_load_custom_rule_from_yaml() {
         let yaml = "app_name: \"MyApp\"\n\

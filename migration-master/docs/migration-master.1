@@ -25,138 +25,151 @@ Migration Master - это приложение для безопасного п�
 .RE
 
 .TP
-.B create-archive
+.B create \fB\-\-output\fR \fIФАЙЛ\fR
 Создание зашифрованного архива профиля
 .RS
 .br
-\fB-o, --output\fR     Путь к выходному файлу
+\fB\-o, \-\-output\fR      Путь к выходному файлу (обязательно)
 .br
-\fB-p, --password\fR   Пароль для шифрования
+\fB\-\-components\fR     Компоненты (default, all или список ключей) [по умолчанию default]
 .br
-\fB--interactive\fR    Интерактивный ввод пароля
+\fB\-\-home\fR           Домашний каталог источника (по умолчанию текущий)
 .br
-\fB-c, --components\fR Компоненты для включения
+\fB\-\-passphrase\fR     Пароль шифрования (не сохраняется)
 .br
-\fB-C, --compression\fR Уровень сжатия (0-22, по умолчанию 3)
+\fB\-c, \-\-compression\fR Уровень сжатия zstd, 0–22 [по умолчанию 3]
 .br
-\fB--dry-run\fR        Dry-run (без создания файла)
+\fB\-\-dry\-run\fR        Оценка без создания файла
 .RE
 
 .TP
-.B inspect-archive \fIАРХИВ\fR
-Проверка содержимого архива
+.B inspect \fIАРХИВ\fR
+Просмотр содержимого архива без восстановления
 .RS
 .br
-\fB--json\fR           Вывод в формате JSON
-.br
-\fB-v, --verbose\fR    Подробная информация
+\fB\-\-passphrase\fR     Пароль шифрования
 .RE
 
 .TP
-.B restore \fIАРХИВ\fR
+.B restore \fIАРХИВ\fR \fB\-\-target\fR \fIКАТАЛОГ\fR
 Восстановление из архива
 .RS
 .br
-\fB-p, --password\fR   Пароль для расшифрования
+\fB\-t, \-\-target\fR     Целевой домашний каталог (обязательно)
 .br
-\fB--components\fR     Компоненты для восстановления
+\fB\-\-components\fR     Компоненты для восстановления [по умолчанию all]
 .br
-\fB-t, --target\fR     Целевая директория
+\fB\-\-passphrase\fR     Пароль для расшифрования
 .br
-\fB--dry-run\fR        Dry-run (без внесения изменений)
+\fB\-\-strategy\fR       Стратегия конфликтов:
+skip|replace|newer|keep\-both|rename\-old|ask [по умолчанию ask]
 .br
-\fB--conflict-strategy\fR Стратегия конфликтов (skip|replace|rename|ask)
+\fB\-\-verify\fR         Проверять хеши после восстановления [по умолчанию true]
 .br
-\fB--backup\fR         Создать резервную копию
+\fB\-\-dry\-run\fR        Dry\-run (без внесения изменений)
 .RE
 
 .TP
-.B migrate-ssh \fIХОСТ\fR
-Прямая миграция по SSH
+.B verify \fIАРХИВ\fR
+Проверка целостности архива и хешей SHA\-256
 .RS
 .br
-\fB-P, --port\fR       Порт SSH (по умолчанию 22)
+\fB\-\-passphrase\fR     Пароль шифрования
 .br
-\fB-i, --identity\fR   Путь к SSH ключу
-.br
-\fB-c, --components\fR Компоненты для переноса
-.br
-\fB--dry-run\fR        Dry-run (без передачи данных)
-.br
-\fB--rate-limit\fR     Ограничение скорости (байт/сек)
-.br
-\fB--compress\fR       Использовать сжатие
+\fB\-\-deep\fR           Проверять хеши всех файлов [по умолчанию true]
 .RE
 
 .TP
-.B verify \fIПУТЬ\fR
-Проверка контрольных сумм
+.B scan
+Сканирование профиля и оценка состава
 .RS
 .br
-\fB-e, --expected\fR   Ожидаемый хеш
+\fB\-\-home\fR           Домашний каталог
 .br
-\fB--algorithm\fR      Алгоритм (sha256)
+\fB\-\-components\fR     Компоненты (default, all или список ключей) [по умолчанию default]
+.br
+\fB\-\-quick\fR          Быстрая оценка без детального разбора
+.br
+\fB\-\-json\fR           Вывод в формате JSON
 .RE
 
 .TP
-.B list-packages
+.B migrate\-ssh \fIАДРЕС\fR
+Прямая миграция по SSH. \fIАДРЕС\fR вида [user@]host[:port]
+.RS
+.br
+\fB\-\-port\fR           Порт SSH (перекрывает значение из адреса)
+.br
+\fB\-\-home\fR           Домашний каталог источника
+.br
+\fB\-\-remote\-home\fR   Домашний каталог на удалённом хосте
+.br
+\fB\-\-components\fR     Компоненты [по умолчанию default]
+.br
+\fB\-i, \-\-identity\fR  Файл приватного ключа SSH
+.br
+\fB\-\-dry\-run\fR       Проверка соединения и плана без передачи
+.RE
+
+.TP
+.B list\-packages
 Список установленных пакетов
 .RS
 .br
-\fB--json\fR           Вывод в формате JSON
-.br
-\fB-c, --category\fR   Фильтр по категории
-.br
-\fB--user-only\fR      Только пользовательские пакеты
+\fB\-\-json\fR           Вывод в формате JSON
 .RE
 
 .TP
-.B list-printers
-Список принтеров
+.B list\-printers
+Список принтеров (CUPS)
 .RS
 .br
-\fB--json\fR           Вывод в формате JSON
-.br
-\fB-v, --verbose\fR    Подробная информация
+\fB\-\-json\fR           Вывод в формате JSON
 .RE
 
 .TP
 .B report
-Генерация отчёта о последней операции
+Отчёт по истории миграций
 .RS
 .br
-\fB-i, --id\fR         ID миграции
+\fB\-o, \-\-output\fR     Каталог для файла отчёта
 .br
-\fB-f, --format\fR     Формат (text|json|html)
+\fB\-f, \-\-format\fR     Формат: json|html|txt [по умолчанию txt]
 .br
-\fB-o, --output\fR     Путь к файлу отчёта
+\fB\-\-limit\fR          Сколько последних операций включить [по умолчанию 20]
 .RE
 
 .TP
-.B config \fIДЕЙСТВИЕ\fR [\fIКЛЮЧ\fR] [\fIЗНАЧЕНИЕ\fR]
+.B config \fIДЕЙСТВИЕ\fR
 Управление настройками
 .RS
 .br
-Действия: get, set, list, reset
+Действия: path, list, reset
+.RE
+
+.TP
+.B app\-rules \fIДЕЙСТВИЕ\fR
+Правила миграции настроек приложений
+.RS
+.br
+\fIlist\fR      Показать правила и объём данных (опции \fB\-\-home\fR, \fB\-\-json\fR)
+.br
+\fIexport\fR     Выгрузить действующие правила в YAML (\fB\-o, \-\-output\fR)
+.br
+\fIimport\fR     Загрузить правила из YAML\-файла
+.br
+\fIrun\-hooks\fR Выполнить post\-migration hooks (требует \fB\-\-confirm\fR)
 .RE
 
 .TP
 .B gui
-Запуск GUI интерфейса
+Запуск графического мастера (GTK4 + libadwaita)
 .RS
 .br
-\fB--dark-theme\fR     Тёмная тема
+Требует сборки проекта с фичей gui
 .RE
 
 .SH ОБЩИЕ ОПЦИИ
-.TP
-.B -v, --verbose
-Уровень логирования (debug, info, warn, error)
-
-.TP
-.B -c, --config
-Путь к файлу конфигурации
-
 .TP
 .B -h, --help
 Показать справку
@@ -171,31 +184,61 @@ Migration Master - это приложение для безопасного п�
 migration-master scan
 
 # Создание зашифрованного архива
-migration-master create-archive -o backup.rmm -p
+migration-master create --output backup.rmm --passphrase 'секрет'
 
-# Восстановление из архива
-migration-master restore backup.rmm
+# Проверка целостности архива
+migration-master verify backup.rmm --passphrase 'секрет'
 
-# SSH миграция
-migration-master migrate-ssh user@192.168.1.100
+# Восстановление из архива (сначала обязательно --dry-run)
+migration-master restore backup.rmm --target /home/user --dry-run --passphrase 'секрет'
+migration-master restore backup.rmm --target /home/user --strategy replace --passphrase 'секрет'
 
-# Проверка хеша
-migration-master verify file.txt -e <hash>
+# Прямая миграция по SSH
+migration-master migrate-ssh user@192.168.1.100 --dry-run
+
+# Отчёт по истории миграций
+migration-master report --format html --limit 50
+
+# Правила миграции приложений
+migration-master app-rules list
+migration-master app-rules export --output my-rules.yaml
+
+# Графический мастер (сборка с --features gui)
+migration-master gui
 .fi
 
 .SH БЕЗОПАСНОСТЬ
 Приложение использует age для шифрования архивов и SHA-256 для проверки целостности.
-Приватные SSH-ключи никогда не копируются без явного подтверждения пользователя.
+Пароль архива нигде не сохраняется и не попадает в журналы, историю и отчёты.
+Приватные SSH-ключи никогда не копируются без явного согласия пользователя.
+Все пути из архива проверяются на выход за пределы целевого каталога
+(path traversal). Привилегированные операции выполняет отдельный помощник
+migration-master-helper по белому списку через PolicyKit.
 
 .SH ФАЙЛЫ
 .I ~/.config/migration-master/config.toml
 .RS
-Файл конфигурации
+Файл конфигурации (неполный файл допустим: недостающие поля берутся из умолчаний)
+.RE
+
+.I ~/.config/migration-master/app-rules.yaml
+.RS
+Пользовательские правила миграции приложений (§5)
 .RE
 
 .I ~/.local/share/migration-master/migrations.db
 .RS
 База данных истории миграций
+.RE
+
+.I ~/.local/share/migration-master/logs/migration-master.log
+.RS
+Журнал операций
+.RE
+
+.I ~/.local/share/migration-master/backups
+.RS
+Резервные копии (<ид>.backup.tar.zst + <ид>.json)
 .RE
 
 .SH АВТОРЫ
