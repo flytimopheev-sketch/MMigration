@@ -83,9 +83,11 @@ base64 = "0.21"
 uuid = { version = "1.6", features = ["v4"] }
 
 # GUI (GTK4 + libadwaita) — только Linux, включается флагом `gui`
+# Крейты переименованы: gtk4 доступен в коде как `gtk`, libadwaita — как `adw`
+# (именно эти имена используются в src/ui/gtk_app.rs и в документации).
 [target.'cfg(target_os = "linux")'.dependencies]
-gtk4 = { version = "0.9", optional = true }
-libadwaita = { version = "0.7", optional = true }
+gtk = { version = "0.9", package = "gtk4", optional = true }
+adw = { version = "0.7", package = "libadwaita", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"
@@ -93,7 +95,7 @@ predicates = "3.1"
 
 [features]
 default = []
-gui = ["dep:gtk4", "dep:libadwaita"]
+gui = ["dep:gtk", "dep:adw"]
 
 [[bin]]
 name = "migration-master"

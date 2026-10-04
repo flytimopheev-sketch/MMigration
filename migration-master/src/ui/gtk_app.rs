@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adw::prelude::*;
+use gtk::prelude::IsA;
 use gtk::{glib, Orientation};
 
 use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
