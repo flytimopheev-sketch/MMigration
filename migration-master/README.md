@@ -95,6 +95,27 @@ cargo build --release
 cargo build --features gui --release
 ```
 
+## Загрузка и сборка RPM
+
+Готовые пакеты публикуются в GitHub Releases:
+<https://github.com/flytimopheev-sketch/MMigration/releases>
+
+```bash
+# Скачать последний релиз
+gh release download v0.1.0 -p '*.rpm'
+
+# Установить на РЕД ОС
+sudo dnf install ./migration-master-0.1.0-1.x86_64.rpm
+```
+
+Пакет собирается в CI на Linux (без Docker): workflow
+`.github/workflows/release-rpm.yml` запускается по тегу `v*` или вручную
+(Actions → Release RPM → Run workflow). Он выполняет `rpmbuild -bb` с
+`%check` (внутри — `cargo test`) и прикрепляет RPM к релизу.
+
+Проверка кода — workflow `.github/workflows/rust.yml`: `cargo fmt --check`,
+`clippy -D warnings`, сборка и тесты CLI, а также сборка GUI с `--features gui`.
+
 ## Установка
 
 ### Из исходников
@@ -106,7 +127,6 @@ cargo install --path .
 ### Из RPM пакета
 
 ```bash
-# После сборки RPM (см. rpm/README.md)
 sudo dnf install ./migration-master-*.rpm
 ```
 
