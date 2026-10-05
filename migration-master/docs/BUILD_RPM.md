@@ -14,7 +14,7 @@ rpmdev-setuptree
 
 ```bash
 cd ~/rpmbuild/SOURCES
-tar czf migration-master-0.1.0.tar.gz --transform 's,^,migration-master-0.1.0/,' \
+tar czf migration-master-0.1.1.tar.gz --transform 's,^,migration-master-0.1.1/,' \
     -C /путь/к/репозиторию migration-master
 ```
 
@@ -31,7 +31,7 @@ cp rpm/migration-master.spec ~/rpmbuild/SPECS/
 rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec
 ```
 
-Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.1.0-1.<dist>.x86_64.rpm`.
+Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.1.1-1.<dist>.x86_64.rpm`.
 
 ### Сборка для любой РЕД ОС (статическая musl, без glibc)
 
@@ -115,7 +115,7 @@ rpm -qpR ~/rpmbuild/RPMS/x86_64/migration-master-*.rpm
 ## Установка и smoke-тест
 
 ```bash
-sudo dnf install ./migration-master-0.1.0-1.x86_64.rpm
+sudo dnf install ./migration-master-0.1.1-1.x86_64.rpm
 
 migration-master --version
 migration-master scan --quick
