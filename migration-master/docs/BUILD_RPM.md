@@ -33,6 +33,56 @@ rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec
 
 Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.1.0-1.<dist>.x86_64.rpm`.
 
+### Сборка для любой РЕД ОС (статическая musl, без glibc)
+
+Если пакет собран не на самой РЕД ОС (например, на CI под Debian/Ubuntu),
+бинарники требуют новый glibc, и на целевой РЕД ОС установка падает:
+
+```text
+error: Failed dependencies:
+    libc.so.6(GLIBC_2.34)(64bit) is needed by migration-master-...
+```
+
+Проверка:
+
+```bash
+# какие версии GLIBC требует пакет (у собранного на Debian CI будет 2.39)
+rpm -qpR ~/rpmbuild/RPMS/x86_64/migration-master-*.rpm | grep GLIBC
+# версия glibc в целевой системе
+ldd --version | head -1
+# хост/платформа сборки — не должна быть чуждой ОС
+rpm -qp --qf '%{VENDOR}\n%{BUILDHOST}\n' migration-master-*.rpm
+```
+
+Решение — статическая линковка musl (в бинарниках **нет ни одной
+динамической зависимости, включая libc**, `rpm -qpR` не показывает GLIBC,
+пакет ставится на любую РЕД ОС):
+
+```bash
+# зависимости сборки (пакет, предоставляющий musl-gcc):
+sudo dnf install musl-gcc          # на Debian/Ubuntu CI: sudo apt install musl-tools
+rustup target add x86_64-unknown-linux-musl
+
+rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --with musl
+```
+
+Ограничения опции `--with musl`:
+
+- только CLI и `migration-master-helper` (по умолчанию GUI и не собирается);
+- `--with gui` + `--with musl` → ошибка в `%build`: GTK4/libadwaita нельзя
+  линковать статически, GUI собирайте на самой РЕД ОС (`rpmbuild ... --with gui`
+  без musl);
+- `%check` тоже выполняется под musl-тегом — нужен установленный target.
+
+Альтернатива без musl — собирать RPM прямо на РЕД ОС (или в chroot/mock с
+репозиториями РЕД ОС): тогда glibc-зависимости совпадут с целевой системой
+из коробки.
+
+> ⚠️ Не «встраивайте» системный glibc в пакет (каталог с libc + свой
+> ld-linux + patchelf): это ломает системные правила обновления, конфликтует
+> с пакетом `glibc` и не поддерживается ни RPM, ни dnf. Статическая musl-сборка
+> даёт тот же эффект «всё внутри пакета» штатными средствами.
+
 ### Что делает spec
 
 - `%build` — `cargo build --release --locked` (CLI + helper);
@@ -81,6 +131,7 @@ ls /usr/share/applications/migration-master.desktop
 | Причина | Решение |
 |---|---|
 | `error: Failed buildRequires: pkgconfig(gtk4)` | `sudo dnf install gtk4-devel` |
+| Установка падает: `libc.so.6(GLIBC_2.xx)(64bit) is needed` / `lib...so not found` | пакет собран на чужой ОС с более новым glibc — пересоберите `rpmbuild ... --with musl` (см. раздел «Сборка для любой РЕД ОС») или на самой РЕД ОС |
 | `%check` падает | `cargo test --release` в каталоге исходников — логи ошибок |
 | `No such file or directory: target/release/migration-master` | в `%build` не запустилась сборка, проверьте версию rust ≥ 1.75 |
 | Устаревшая политика PolicyKit | тест `polkit::tests::test_shipped_policy_matches_render` подскажет: перегенерируйте `resources/com.redos.migration-master.policy` командой `cargo test --lib update_shipped_policy -- --ignored` |

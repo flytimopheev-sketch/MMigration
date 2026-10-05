@@ -1,10 +1,22 @@
 Name:           migration-master
-Version:        0.1.0
+Version:        0.1.1
 Release:        1%{?dist}
 Summary:        Мастер миграции пользователя для РЕД ОС Linux
 License:        GPL-3.0
 URL:            https://github.com/flytimopheev-sketch/MMigration
 Source0:        %{name}-%{version}.tar.gz
+
+# Опция сборки: rpmbuild --with musl — статическая линковка musl.
+# Такие бинарники не зависят от glibc целевой системы и ставятся на любую
+# РЕД ОС (иначе при установке rpm ругается на libc.so.6(GLIBC_x.yy), если
+# пакет собран на системе с более новым glibc, например на Debian CI).
+%bcond_with musl
+
+%if %{with musl}
+%global bin_dir target/x86_64-unknown-linux-musl/release
+%else
+%global bin_dir target/release
+%endif
 
 BuildRequires:  rust >= 1.75
 BuildRequires:  cargo
@@ -30,15 +42,32 @@ Migration Master - это приложение для безопасного п�
 
 %build
 # CLI и helper собираются всегда; GUI включается флагом сборки `--with gui`.
+%if %{with musl}
+# Статическая musl-линковка: бинарники не зависят от glibc/линковщика целевой
+# системы — `rpm -qpR` не покажет ни одной версии GLIBC, установка идёт на
+# любую РЕД ОС. Для этого нужны musl-gcc и rust-тarget:
+#   rustup target add x86_64-unknown-linux-musl
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+cargo build --release --locked --target x86_64-unknown-linux-musl
+%if 0%{?with_gui}
+%{error: --with gui несовместим с --with musl: GTK4/libadwaita нельзя линковать статически; GUI собирайте на самой РЕД ОС}
+%endif
+%else
 cargo build --release --locked
 
 %if 0%{?with_gui}
 cargo build --release --locked --features gui
 %endif
+%endif
 
 %check
 # Юнит-тесты (архивы, шифрование, path traversal, конфликты, отмена, драйверы ресурсов).
+%if %{with musl}
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+cargo test --release --locked --target x86_64-unknown-linux-musl
+%else
 cargo test --release --locked
+%endif
 
 %install
 mkdir -p %{buildroot}%{_bindir}
@@ -50,8 +79,9 @@ mkdir -p %{buildroot}%{_datadir}/%{name}/examples
 mkdir -p %{buildroot}%{_mandir}/man1
 
 # Основной бинарник и привилегированный помощник (белый список операций).
-install -m 755 target/release/migration-master %{buildroot}%{_bindir}/migration-master
-install -m 755 target/release/migration-master-helper %{buildroot}%{_bindir}/migration-master-helper
+# %{bin_dir} = target/release либо target/x86_64-unknown-linux-musl/release (опция --with musl).
+install -m 755 %{bin_dir}/migration-master %{buildroot}%{_bindir}/migration-master
+install -m 755 %{bin_dir}/migration-master-helper %{buildroot}%{_bindir}/migration-master-helper
 
 # Интеграция с рабочим столом, AppStream и PolicyKit.
 install -m 644 resources/migration-master.desktop %{buildroot}%{_datadir}/applications/
@@ -90,6 +120,13 @@ fi
 %{_mandir}/man1/migration-master.1.gz
 
 %changelog
+* Mon Oct 05 2026 Migration Master Team <team@redos.local> - 0.1.1-1
+- Опция сборки --with musl: статическая линковка CLI и helper,
+  бинарники не зависят от glibc целевой системы
+- Пакет устанавливается на любую РЕД ОС независимо от версии glibc
+  (раньше установка падала из-за libc.so.6(GLIBC_2.xx) из чужого окружения CI)
+- CI: Release RPM по умолчанию собирает статический musl-пакет
+
 * Sun Oct 04 2026 Migration Master Team <team@redos.local> - 0.1.0-1
 - Установка migration-master-helper, политики PolicyKit, иконки и примеров
 - Подключены юнит-тесты в %check

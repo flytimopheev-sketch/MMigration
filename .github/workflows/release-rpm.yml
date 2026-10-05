@@ -1,6 +1,9 @@
 name: Release RPM
 
 # Сборка release RPM-пакета на Linux (без Docker).
+# По умолчанию — статическая musl-сборка: бинарники не зависят от glibc
+# хоста CI (ubuntu-latest даёт GLIBC_2.39, на РЕД ОС такого нет — установка
+# падала с "libc.so.6(GLIBC_2.xx)(64bit) is needed").
 # Триггеры: тег v*; ручной запуск; успешная сборка основного CI на main.
 on:
   push:
@@ -9,9 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       with_gui:
-        description: "Собрать с графическим интерфейсом (GTK4 + libadwaita)"
+        description: "Собрать с GUI (GTK4, только для Ubuntu — НЕ встанет на РЕД ОС из-за glibc)"
         type: boolean
-        default: true
+        default: false
 
 jobs:
   rpm:
@@ -30,28 +33,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Определить версию из тега
+      - name: Определить версию
         id: ver
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=0.1.0" >> "$GITHUB_OUTPUT"
+            # Ручной запуск: версия берётся из spec, чтобы не расходиться с ним.
+            VERSION=$(sed -n 's/^Version:[[:space:]]*//p' migration-master/rpm/migration-master.spec | head -n1)
           else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            VERSION=${GITHUB_REF_NAME#v}
           fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Установить rpmbuild и зависимости сборки
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm build-essential pkg-config \
+            musl-tools zstd \
             libgtk-4-dev libadwaita-1-dev libglib2.0-dev libgirepository1.0-dev \
             libpango1.0-dev libcairo2-dev libssl-dev \
-            libsqlite3-dev libcups2-dev zstd
+            libsqlite3-dev libcups2-dev
 
       - name: Установить Rust toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # musl-таргет нужен для статической сборки (опция spec --with musl).
+          echo "$HOME/.cargo/bin" >> "$GITHUB_ENV"
+          "$HOME/.cargo/bin/rustup" target add x86_64-unknown-linux-musl
 
       - name: Подготовить исходники (tarball для Source0)
         run: |
@@ -74,14 +83,37 @@ jobs:
           # --nodeps: rpmbuild -bb проверяет BuildRequires через rpm, которого на
           # ubuntu-latest нет. Зависимости уже установлены шагом выше, поэтому
           # проверку пропускаем (на РЕД ОС spec собирается как обычно).
-          rpmbuild -bb --nodeps ~/rpmbuild/SPECS/migration-master.spec \
-            --define "_topdir $HOME/rpmbuild" \
-            --define "version ${VERSION}" \
-            --with gui
+          if [ "${{ github.event.inputs.with_gui }}" = "true" ]; then
+            # GUI-вариант: динамическая линковка, ставится только на ubuntu
+            # (версии glibc совпадают) — для РЕД ОС такой пакет не годится.
+            rpmbuild -bb --nodeps ~/rpmbuild/SPECS/migration-master.spec \
+              --define "_topdir $HOME/rpmbuild" \
+              --define "version ${VERSION}" \
+              --with gui
+          else
+            # musl-вариант по умолчанию: статические бинарники без зависимостей
+            # от glibc — установка на любую РЕД ОС.
+            rpmbuild -bb --nodeps ~/rpmbuild/SPECS/migration-master.spec \
+              --define "_topdir $HOME/rpmbuild" \
+              --define "version ${VERSION}" \
+              --with musl
+          fi
 
       - name: Проверить содержимое пакета
         run: |
+          set -euo pipefail
           rpm -qlp ~/rpmbuild/RPMS/x86_64/*.rpm
+          echo "== Зависимости пакета =="
+          rpm -qpR ~/rpmbuild/RPMS/x86_64/*.rpm || true
+          if [ "${{ github.event.inputs.with_gui }}" != "true" ]; then
+            # musl-пакет обязан быть независимым от glibc: ни одной версии
+            # GLIBC в зависимостях. Иначе на РЕД ОС установка упадёт.
+            if rpm -qpR ~/rpmbuild/RPMS/x86_64/*.rpm | grep -q 'GLIBC_'; then
+              echo "::error::Пакет требует версии GLIBC — musl-сборка не сработала"
+              exit 1
+            fi
+            echo "OK: версий GLIBC в зависимостях нет (статическая musl-сборка)."
+          fi
 
       - name: Сохранить артефакт
         uses: actions/upload-artifact@v4

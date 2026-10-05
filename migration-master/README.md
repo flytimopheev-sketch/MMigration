@@ -102,16 +102,22 @@ cargo build --features gui --release
 
 ```bash
 # Скачать последний релиз
-gh release download v0.1.0 -p '*.rpm'
+gh release download v0.1.1 -p '*.rpm'
 
 # Установить на РЕД ОС
-sudo dnf install ./migration-master-0.1.0-1.x86_64.rpm
+sudo dnf install ./migration-master-0.1.1-1.x86_64.rpm
 ```
 
 Пакет собирается в CI на Linux (без Docker): workflow
 `.github/workflows/release-rpm.yml` запускается по тегу `v*` или вручную
 (Actions → Release RPM → Run workflow). Он выполняет `rpmbuild -bb` с
 `%check` (внутри — `cargo test`) и прикрепляет RPM к релизу.
+
+По умолчанию пакет собирается **статически (musl)**: бинарники не зависят
+от версии glibc хоста CI, поэтому устанавливаются на любую РЕД ОС
+(иначе установка падала с `libc.so.6(GLIBC_2.xx)(64bit) is needed`) —
+см. [Сборка RPM](docs/BUILD_RPM.md). Вариант с GUI (для Ubuntu) собирается
+только при ручном запуске с флагом `with_gui`.
 
 Проверка кода — workflow `.github/workflows/rust.yml`: `cargo fmt --check`,
 `clippy -D warnings`, сборка и тесты CLI, а также сборка GUI с `--features gui`.
