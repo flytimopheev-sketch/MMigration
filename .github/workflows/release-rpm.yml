@@ -1,20 +1,25 @@
 name: Release RPM
 
-# Сборка release RPM-пакета на Linux (без Docker).
-# По умолчанию — статическая musl-сборка: бинарники не зависят от glibc
-# хоста CI (ubuntu-latest даёт GLIBC_2.39, на РЕД ОС такого нет — установка
-# падала с "libc.so.6(GLIBC_2.xx)(64bit) is needed").
-# Триггеры: тег v*; ручной запуск; успешная сборка основного CI на main.
+# Сборка release RPM-пакета на Linux (без Docker, обычный раннер GitHub Actions).
+# По умолчанию — пакет с GUI (GTK4 + libadwaita): линковка через cargo-zigbuild
+# (zig cc) с потолком glibc 2.28, поэтому пакет устанавливается на РЕД ОС
+# независимо от glibc хоста CI (ubuntu-latest даёт GLIBC_2.39, на РЕД ОС такого
+# нет — установка падала с "libc.so.6(GLIBC_2.xx)(64bit) is needed").
+# Ручной запуск с variant=musl — статическая musl-сборка CLI без GUI.
+# Триггеры: тег v*; ручной запуск.
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
-      with_gui:
-        description: "Собрать с GUI (GTK4, только для Ubuntu — НЕ встанет на РЕД ОС из-за glibc)"
-        type: boolean
-        default: false
+      variant:
+        description: "Вариант сборки: gui (GTK4, glibc <= 2.28) или musl (статический CLI)"
+        type: choice
+        options:
+          - gui
+          - musl
+        default: gui
 
 jobs:
   rpm:
@@ -61,6 +66,30 @@ jobs:
           # musl-таргет нужен для статической сборки (опция spec --with musl).
           "$HOME/.cargo/bin/rustup" target add x86_64-unknown-linux-musl
 
+      - name: Установить zig и cargo-zigbuild (линковка с потолком glibc)
+        if: inputs.variant != 'musl'
+        run: |
+          set -euo pipefail
+          # Последняя стабильная версия zig и ссылка на архив берутся из
+          # официального индекса скачиваний: имена архивов меняются между версиями.
+          curl -sSfL https://ziglang.org/download/index.json -o "$RUNNER_TEMP/zig-index.json"
+          python3 - "$RUNNER_TEMP/zig-index.json" <<'PYEOF' >> "$GITHUB_ENV"
+          import json, sys
+          idx = json.load(open(sys.argv[1]))
+          stable = next(k for k in idx if k != "master")
+          arch = idx[stable]["x86_64-linux"]
+          print("ZIG_VERSION=" + stable)
+          print("ZIG_URL=" + arch["tarball"])
+          print("ZIG_SHASUM=" + arch["shasum"])
+          PYEOF
+          curl -sSfL "$ZIG_URL" -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "$ZIG_SHASUM  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/zig"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
+          echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+          cargo install --locked cargo-zigbuild
+          echo "Установлен zig $ZIG_VERSION"
+
       - name: Подготовить исходники (tarball для Source0)
         run: |
           set -euo pipefail
@@ -82,37 +111,84 @@ jobs:
           # --nodeps: rpmbuild -bb проверяет BuildRequires через rpm, которого на
           # ubuntu-latest нет. Зависимости уже установлены шагом выше, поэтому
           # проверку пропускаем (на РЕД ОС spec собирается как обычно).
-          if [ "${{ github.event.inputs.with_gui }}" = "true" ]; then
-            # GUI-вариант: динамическая линковка, ставится только на ubuntu
-            # (версии glibc совпадают) — для РЕД ОС такой пакет не годится.
-            rpmbuild -bb --nodeps ~/rpmbuild/SPECS/migration-master.spec \
-              --define "_topdir $HOME/rpmbuild" \
-              --define "version ${VERSION}" \
-              --with gui
-          else
-            # musl-вариант по умолчанию: статические бинарники без зависимостей
-            # от glibc — установка на любую РЕД ОС.
+          if [ "${{ inputs.variant }}" = "musl" ]; then
+            # musl-вариант: статические бинарники без зависимостей от glibc —
+            # установка на любую РЕД ОС (только CLI, без GUI).
             rpmbuild -bb --nodeps ~/rpmbuild/SPECS/migration-master.spec \
               --define "_topdir $HOME/rpmbuild" \
               --define "version ${VERSION}" \
               --with musl
-          fi
+          else
+            # GUI-вариант по умолчанию: zig cc линкует бинарники против glibc
+            # не новее 2.28 (glibc_floor в spec) — пакет с GUI устанавливается
+            # на РЕД ОС, где glibc старше, чем на раннере CI.
+            rpmbuild -bb --nodeps ~/rpmbuild/SPECS/migration-master.spec \
+              --define "_topdir $HOME/rpmbuild" \
+              --define "version ${VERSION}" \
+              --with gui \
+              --define "zigbuild 1"
 
-      - name: Проверить содержимое пакета
+      - name: Проверить пакет (musl)
+        if: inputs.variant == 'musl'
         run: |
           set -euo pipefail
-          rpm -qlp ~/rpmbuild/RPMS/x86_64/*.rpm
+          RPM=$(ls ~/rpmbuild/RPMS/x86_64/*.rpm)
+          rpm -qlp "$RPM"
           echo "== Зависимости пакета =="
-          rpm -qpR ~/rpmbuild/RPMS/x86_64/*.rpm || true
-          if [ "${{ github.event.inputs.with_gui }}" != "true" ]; then
-            # musl-пакет обязан быть независимым от glibc: ни одной версии
-            # GLIBC в зависимостях. Иначе на РЕД ОС установка упадёт.
-            if rpm -qpR ~/rpmbuild/RPMS/x86_64/*.rpm | grep -q 'GLIBC_'; then
-              echo "::error::Пакет требует версии GLIBC — musl-сборка не сработала"
-              exit 1
-            fi
-            echo "OK: версий GLIBC в зависимостях нет (статическая musl-сборка)."
+          rpm -qpR "$RPM" || true
+          # musl-пакет обязан быть независимым от glibc: ни одной версии
+          # GLIBC в зависимостях. Иначе на РЕД ОС установка упадёт.
+          if rpm -qpR "$RPM" | grep -q 'GLIBC_'; then
+            echo "::error::Пакет требует версии GLIBC — musl-сборка не сработала"
+            exit 1
           fi
+          echo "OK: версий GLIBC в зависимостях нет (статическая musl-сборка)."
+
+      - name: Проверить пакет (gui)
+        if: inputs.variant != 'musl'
+        run: |
+          set -euo pipefail
+          RPM=$(ls ~/rpmbuild/RPMS/x86_64/*.rpm)
+          rpm -qlp "$RPM"
+          echo "== Зависимости пакета =="
+          rpm -qpR "$RPM" || true
+          # 1) Ни одна версия GLIBC в зависимостях не выше потолка 2.28,
+          #    иначе установка на РЕД ОС упадёт с "is needed".
+          # 2) GUI действительно слинкован: среди зависимостей есть GTK4
+          #    и libadwaita.
+          python3 - "$RPM" <<'PYEOF'
+          import re, subprocess, sys
+          out = subprocess.run(["rpm", "-qpR", sys.argv[1]], capture_output=True, text=True).stdout
+          floor = (2, 28)
+          vers = [tuple(map(int, v.split("."))) for v in re.findall(r"GLIBC_(\d+(?:\.\d+)*)", out)]
+          if not vers:
+              print("::error::Нет ни одной версии GLIBC в зависимостях — ожидалась динамическая сборка")
+              sys.exit(1)
+          bad = sorted({v for v in vers if v > floor})
+          if bad:
+              msg = ", ".join(".".join(map(str, v)) for v in bad)
+              print("::error::Слишком новые версии GLIBC: " + msg + " (потолок 2.28)")
+              sys.exit(1)
+          print("OK: максимальная версия GLIBC = " + ".".join(map(str, max(vers))))
+          for soname in ("libgtk-4", "libadwaita"):
+              if soname not in out:
+                  print("::error::Среди зависимостей нет " + soname + " — GUI не слинкован")
+                  sys.exit(1)
+          print("OK: GTK4 и libadwaita присутствуют в зависимостях")
+          PYEOF
+          # 3) Smoke-тест: бинарник должен запускать GUI-код, а не отвечать
+          #    «графический интерфейс недоступен». Дисплея в CI нет — GTK
+          #    завершится с ошибкой открытия дисплея, это ожидаемо.
+          BIN=$(find ~/rpmbuild/BUILD -type f -path '*/release/migration-master' | head -n 1)
+          echo "Бинарник: $BIN"
+          timeout 30 "$BIN" --version
+          OUT=$(timeout 30 "$BIN" gui 2>&1 || true)
+          echo "$OUT"
+          if echo "$OUT" | grep -q 'графический интерфейс недоступен'; then
+            echo "::error::Бинарник собран без фичи gui"
+            exit 1
+          fi
+          echo "OK: GUI-код запускается (ошибка дисплея в CI ожидаема)."
 
       - name: Сохранить артефакт
         uses: actions/upload-artifact@v4
@@ -126,3 +202,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ~/rpmbuild/RPMS/x86_64/*.rpm
+
+
+

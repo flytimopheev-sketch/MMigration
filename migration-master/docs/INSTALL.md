@@ -5,7 +5,7 @@
 ## Способ 1. RPM-пакет (рекомендуется)
 
 ```bash
-sudo dnf install ./migration-master-0.1.1-1.x86_64.rpm
+sudo dnf install ./migration-master-0.1.2-1.x86_64.rpm
 ```
 
 Пакет устанавливает:

@@ -1,5 +1,5 @@
 Name:           migration-master
-Version:        0.1.1
+Version:        0.1.2
 Release:        1%{?dist}
 Summary:        Мастер миграции пользователя для РЕД ОС Linux
 License:        GPL-3.0
@@ -11,6 +11,13 @@ Source0:        %{name}-%{version}.tar.gz
 # РЕД ОС (иначе при установке rpm ругается на libc.so.6(GLIBC_x.yy), если
 # пакет собран на системе с более новым glibc, например на Debian CI).
 %bcond_with musl
+
+# CI-вариант GUI: rpmbuild --with gui --define "zigbuild 1" — линковка через
+# cargo-zigbuild (zig cc) против glibc версии не новее %{glibc_floor}:
+# пакет с GUI устанавливается на РЕД ОС, где glibc старше, чем на хосте CI
+# (ubuntu-latest даёт GLIBC_2.39). Потолок переопределяется опцией
+# --define "glibc_floor X.Y".
+%{!?glibc_floor: %global glibc_floor 2.28}
 
 %if %{with musl}
 %global bin_dir target/x86_64-unknown-linux-musl/release
@@ -53,10 +60,25 @@ cargo build --release --locked --target x86_64-unknown-linux-musl
 %{error: --with gui несовместим с --with musl: GTK4/libadwaita нельзя линковать статически; GUI собирайте на самой РЕД ОС}
 %endif
 %else
-cargo build --release --locked
-
 %if 0%{?with_gui}
+%if 0%{?zigbuild}
+# GUI через cargo-zigbuild: zig cc линкует бинарники против glibc
+# %{glibc_floor} (см. шапку spec) — пакет с GUI устанавливается на РЕД ОС
+# независимо от версии glibc на хосте сборки.
+cargo zigbuild --release --locked --features gui --target x86_64-unknown-linux-gnu.%{glibc_floor}
+# cargo-zigbuild складывает бинарники в target/<triple>/release —
+# нормализуем в target/release, чтобы %install не зависел от layout.
+mkdir -p target/release
+SRC=$(dirname "$(find target -type f -path '*/release/migration-master' | head -n 1)")
+if [ "$SRC" != "target/release" ]; then
+    cp -f "$SRC/migration-master" "$SRC/migration-master-helper" target/release/
+fi
+%else
+cargo build --release --locked
 cargo build --release --locked --features gui
+%endif
+%else
+cargo build --release --locked
 %endif
 %endif
 
@@ -120,6 +142,12 @@ fi
 %{_mandir}/man1/migration-master.1.gz
 
 %changelog
+* Fri Oct 09 2026 Migration Master Team <team@redos.local> - 0.1.2-1
+- Release RPM по умолчанию собирается с GUI (фича gui, GTK4 + libadwaita)
+- CI: линковка GUI через cargo-zigbuild с потолком glibc 2.28 — пакет
+  устанавливается на РЕД ОС независимо от версии glibc хоста CI
+- CI: smoke-тест GUI-бинарника (команда gui запускает GTK-код)
+
 * Mon Oct 05 2026 Migration Master Team <team@redos.local> - 0.1.1-1
 - Опция сборки --with musl: статическая линковка CLI и helper,
   бинарники не зависят от glibc целевой системы

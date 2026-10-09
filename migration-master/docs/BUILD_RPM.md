@@ -14,7 +14,7 @@ rpmdev-setuptree
 
 ```bash
 cd ~/rpmbuild/SOURCES
-tar czf migration-master-0.1.1.tar.gz --transform 's,^,migration-master-0.1.1/,' \
+tar czf migration-master-0.1.2.tar.gz --transform 's,^,migration-master-0.1.2/,' \
     -C /путь/к/репозиторию migration-master
 ```
 
@@ -31,7 +31,7 @@ cp rpm/migration-master.spec ~/rpmbuild/SPECS/
 rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec
 ```
 
-Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.1.1-1.<dist>.x86_64.rpm`.
+Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.1.2-1.<dist>.x86_64.rpm`.
 
 ### Сборка для любой РЕД ОС (статическая musl, без glibc)
 
@@ -102,6 +102,18 @@ rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --with gui
 `migration-master gui` сообщит, что графический интерфейс не включён, и
 предложит консольный режим.
 
+При сборке **не на самой РЕД ОС** (например, на CI под Ubuntu) добавляйте
+`--define "zigbuild 1"`: линковку выполнит zig cc против glibc версии не новее
+`%{glibc_floor}` (по умолчанию 2.28 — версия glibc целевой РЕД ОС), иначе
+пакет потребует `libc.so.6(GLIBC_2.xx)` новее целевой системы и не установится:
+
+```bash
+rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --with gui --define "zigbuild 1"
+```
+
+Так линкуются и CLI, и helper; в CI это делает workflow
+`.github/workflows/release-rpm.yml` (нужны zig и `cargo install cargo-zigbuild`).
+
 ## Проверка пакета
 
 ```bash
@@ -115,7 +127,7 @@ rpm -qpR ~/rpmbuild/RPMS/x86_64/migration-master-*.rpm
 ## Установка и smoke-тест
 
 ```bash
-sudo dnf install ./migration-master-0.1.1-1.x86_64.rpm
+sudo dnf install ./migration-master-0.1.2-1.x86_64.rpm
 
 migration-master --version
 migration-master scan --quick
