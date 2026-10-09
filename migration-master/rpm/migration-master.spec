@@ -68,7 +68,9 @@ cargo build --release --locked --target x86_64-unknown-linux-musl
 # независимо от версии glibc на хосте сборки.
 # rustc резолвит -l-имена через свой линкер zig и не заходит в /usr/lib* —
 # каталоги dev-симлинков GTK/GLib/Cairo указываем явно флагом -L.
-export RUSTFLAGS="${RUSTFLAGS:-} -L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib"
+# Хостовые .so (libvulkan от ubuntu) требуют glibc новее потолка: не проверяем
+# их собственные ссылки — на целевой РЕД ОС подставятся свои библиотеки.
+export RUSTFLAGS="${RUSTFLAGS:-} -L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib -C link-arg=-Wl,--allow-shlib-undefined"
 cargo zigbuild --release --locked --features gui --target x86_64-unknown-linux-gnu.%{glibc_floor}
 # cargo-zigbuild складывает бинарники в target/<triple>/release —
 # нормализуем в target/release, чтобы %install не зависел от layout.
