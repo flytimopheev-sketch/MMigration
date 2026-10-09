@@ -53,7 +53,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm build-essential pkg-config \
-            musl-tools zstd \
+            musl-tools zstd cpio \
             libgtk-4-dev libadwaita-1-dev libglib2.0-dev libgirepository1.0-dev \
             libpango1.0-dev libcairo2-dev libssl-dev \
             libsqlite3-dev libcups2-dev
@@ -178,10 +178,14 @@ jobs:
                   sys.exit(1)
           print("OK: GTK4 и libadwaita присутствуют в зависимостях")
           PYEOF
-          # 3) Smoke-тест: бинарник должен запускать GUI-код, а не отвечать
-          #    «графический интерфейс недоступен». Дисплея в CI нет — GTK
-          #    завершится с ошибкой открытия дисплея, это ожидаемо.
-          BIN=$(find ~/rpmbuild/BUILD -type f -path '*/release/migration-master' | head -n 1)
+          # 3) Smoke-тест: rpmbuild уже удалил BUILD/BUILDROOT, поэтому
+          #    распаковываем бинарник ИЗ готового RPM и запускаем: он должен
+          #    уходить в GUI-код, а не отвечать «графический интерфейс
+          #    недоступен». Дисплея в CI нет — GTK завершится с ошибкой
+          #    открытия дисплея, это ожидаемо.
+          TMP=$(mktemp -d)
+          (cd "$TMP" && rpm2cpio "$RPM" | cpio -idm --quiet)
+          BIN="$TMP/usr/bin/migration-master"
           echo "Бинарник: $BIN"
           timeout 30 "$BIN" --version
           OUT=$(timeout 30 "$BIN" gui 2>&1 || true)
@@ -190,6 +194,7 @@ jobs:
             echo "::error::Бинарник собран без фичи gui"
             exit 1
           fi
+          rm -rf "$TMP"
           echo "OK: GUI-код запускается (ошибка дисплея в CI ожидаема)."
 
       - name: Сохранить артефакт
