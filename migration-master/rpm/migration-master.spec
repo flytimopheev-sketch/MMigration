@@ -11,6 +11,7 @@ Source0:        %{name}-%{version}.tar.gz
 # РЕД ОС (иначе при установке rpm ругается на libc.so.6(GLIBC_x.yy), если
 # пакет собран на системе с более новым glibc, например на Debian CI).
 %bcond_with musl
+%bcond_with gui
 
 # CI-вариант GUI: rpmbuild --with gui --define "zigbuild 1" — линковка через
 # cargo-zigbuild (zig cc) против glibc версии не новее %{glibc_floor}:
@@ -56,11 +57,11 @@ Migration Master - это приложение для безопасного п�
 #   rustup target add x86_64-unknown-linux-musl
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
 cargo build --release --locked --target x86_64-unknown-linux-musl
-%if 0%{?with_gui}
+%if %{with gui}
 %{error: --with gui несовместим с --with musl: GTK4/libadwaita нельзя линковать статически; GUI собирайте на самой РЕД ОС}
 %endif
 %else
-%if 0%{?with_gui}
+%if %{with gui}
 %if 0%{?zigbuild}
 # GUI через cargo-zigbuild: zig cc линкует бинарники против glibc
 # %{glibc_floor} (см. шапку spec) — пакет с GUI устанавливается на РЕД ОС
