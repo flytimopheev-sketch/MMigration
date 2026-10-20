@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     # GTK4/libadwaita нужны только для сборки GUI (--features gui).
     # Без libgirepository1.0-dev / libgtk-4-dev падает сборка gobject-sys:
