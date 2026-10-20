@@ -34,7 +34,10 @@ jobs:
 
     - name: Clippy
       working-directory: migration-master
-      run: cargo clippy --all-targets -- -D warnings
+      # --all-features обязателен: без него GUI-код (src/ui/gtk_app.rs) вообще
+      # не компилируется и не проверяется — именно так в пакет попала
+      # зависимость от API libadwaita 1.4, из-за чего GUI не стартовал.
+      run: cargo clippy --all-targets --all-features -- -D warnings
 
     - name: Build (CLI)
       working-directory: migration-master
@@ -48,3 +51,8 @@ jobs:
     - name: Build (GUI, feature gui)
       working-directory: migration-master
       run: cargo build --verbose --features gui
+
+    # Тесты GUI-функций (в том числе страниц мастера) — с фичей `gui`.
+    - name: Run tests (GUI, feature gui)
+      working-directory: migration-master
+      run: cargo test --verbose --features gui

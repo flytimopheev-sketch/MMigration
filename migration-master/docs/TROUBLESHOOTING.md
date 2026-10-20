@@ -58,8 +58,9 @@ cargo test --release --locked
 
 ### `no matching package for gtk4` в rpmbuild
 
-В `%build` включён `--with gui`, но не установлены зависимости. Либо
-поставьте `gtk4-devel libadwaita-devel`, либо соберите без опции `--with gui`.
+Графическая часть собирается по умолчанию, поэтому нужны devel-пакеты GTK4 и
+libadwaita: `sudo dnf install gtk4-devel libadwaita-devel`. Собрать пакет без
+графической части можно флагом `--without gui`.
 
 ## Архивы
 
@@ -174,22 +175,74 @@ sudo dnf install polkit
 
 ### `графический интерфейс недоступен`
 
-Соберите с фичей `gui` на Linux:
+Сообщение означает, что бинарник собран **без** графической части: команда
+`migration-master gui` в такой сборке всегда отвечает этой подсказкой.
 
 ```bash
-cargo build --features gui --release
+# что установлено
+rpm -q migration-master
+# есть ли GTK4/libadwaita в зависимостях пакета
+rpm -qR migration-master | grep -E 'gtk|adwaita'
 ```
 
-Команда `migration-master gui` без фичи возвращает подсказку, а не падает.
+Если в списке зависимостей нет `libgtk-4.so.1` — установлен CLI-only пакет
+(например, статическая musl-сборка из старых релизов или сборка
+`rpmbuild --without gui`). Поставьте обычный релизный RPM с GUI:
+
+```bash
+sudo dnf install ./migration-master-0.1.3-1.x86_64.rpm
+```
+
+Сборка из исходников с графической частью:
+
+```bash
+cargo build --release --features gui
+```
+
+### `symbol lookup error: ... undefined symbol: adw_navigation_view_new`
+
+Бинарник собран против libadwaita 1.4 (`NavigationView`, `ToolbarView`), а в
+системе libadwaita 1.2 (РЕД ОС 8) — таких символов нет, и процесс падает при
+запуске. Мастер использует только GTK4 ≥ 4.0 и libadwaita ≥ 1.0; версии
+0.1.3 и новее такой ошибки не дают. Проверить версию:
+
+```bash
+rpm -q libadwaita
+pkg-config --modversion libadwaita-1
+```
+
+### `не удалось открыть графическую сессию`
+
+Приложение не смогло подключиться к X11/Wayland:
+
+```bash
+echo "$DISPLAY $WAYLAND_DISPLAY"     # должно быть непустым
+loginctl show-session "$XDG_SESSION_ID" 2>/dev/null | head -3
+GDK_BACKEND=wayland migration-master gui   # либо x11
+```
+
+Из-под `sudo` графический мастер не запускается — запускайте от обычного
+пользователя. Консольный режим (`migration-master scan/create/restore`) работает
+всегда.
 
 ### Окно не открывается / пустой экран
 
 ```bash
 GDK_BACKEND=wayland migration-master gui   # либо x11
 journalctl --user -n 50
+tail -50 ~/.local/share/migration-master/logs/migration-master.log
 ```
 
-Проверьте наличие `libadwaita` и драйверов OpenGL.
+В журнале записываются версии GTK4 и libadwaita, с которыми запустился мастер,
+и причина сбоя инициализации.
+
+### `error while loading shared libraries: libgtk-4.so.1`
+
+В системе нет GTK4:
+
+```bash
+sudo dnf install gtk4 libadwaita
+```
 
 ## Журналы
 

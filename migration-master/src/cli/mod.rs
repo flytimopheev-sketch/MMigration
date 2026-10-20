@@ -1,6 +1,6 @@
 //! Консольный интерфейс (clap): инспекция, создание, восстановление, миграция.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap::{Parser, Subcommand};
@@ -217,8 +217,6 @@ pub enum ConfigAction {
     Path,
 }
 
-use std::path::Path;
-
 use crate::file_transfer::TransferItem;
 
 /// Консольный индикатор прогресса.
@@ -361,7 +359,7 @@ impl Cli {
             } => {
                 let components = parse_components(&components)?;
                 let source_home = home.unwrap_or_else(default_home);
-                let items = scan_items(&source_home, &components)?;
+                let items = scan_items(&source_home, &components, Some(output.as_path()))?;
                 let options = CreateArchiveOptions {
                     output,
                     source_home,
@@ -782,7 +780,15 @@ impl Cli {
 }
 
 /// Собрать элементы профиля для упаковки.
-fn scan_items(home: &Path, components: &[ComponentType]) -> Result<Vec<TransferItem>> {
+///
+/// `exclude` — путь, который не следует включать в архив: сам файл архива,
+/// если он лежит внутри сканируемого каталога (иначе прошлый архив попадает
+/// в новый и размер растёт от запуска к запуску).
+fn scan_items(
+    home: &Path,
+    components: &[ComponentType],
+    exclude: Option<&Path>,
+) -> Result<Vec<TransferItem>> {
     let config = WizardConfig {
         components: components.to_vec(),
         app_rules: crate::applications::load_effective_rules(),
@@ -790,7 +796,24 @@ fn scan_items(home: &Path, components: &[ComponentType]) -> Result<Vec<TransferI
     };
     let mut wizard = MigrationWizard::new(config);
     let inventory = wizard.scan()?.clone();
-    Ok(inventory.items)
+    let mut items = inventory.items;
+    if let Some(exclude) = exclude {
+        let exclude = absolute_path(exclude);
+        items.retain(|item| item.source != exclude);
+    }
+    Ok(items)
+}
+
+/// Привести путь к абсолютному (для сравнения с путями файлов профиля).
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(dir) => dir.join(path),
+            Err(_) => path.to_path_buf(),
+        }
+    }
 }
 
 /// Разбор компонентов из строки (`default`, `all` или список ключей).

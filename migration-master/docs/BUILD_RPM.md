@@ -14,7 +14,7 @@ rpmdev-setuptree
 
 ```bash
 cd ~/rpmbuild/SOURCES
-tar czf migration-master-0.1.2.tar.gz --transform 's,^,migration-master-0.1.2/,' \
+tar czf migration-master-0.1.3.tar.gz --transform 's,^,migration-master-0.1.3/,' \
     -C /путь/к/репозиторию migration-master
 ```
 
@@ -31,7 +31,19 @@ cp rpm/migration-master.spec ~/rpmbuild/SPECS/
 rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec
 ```
 
-Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.1.2-1.<dist>.x86_64.rpm`.
+Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.1.3-1.<dist>.x86_64.rpm`.
+
+**Графический мастер собирается по умолчанию.** Пакет без GUI получается
+явным флагом `--without gui`:
+
+```bash
+rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --without gui
+```
+
+> Раньше GUI был опциональным (`--with gui`), и обычная сборка `rpmbuild -ba`
+> давала пакет только с CLI: команда `migration-master gui` отвечала
+> «графический интерфейс недоступен». Теперь обратная ситуация: по умолчанию
+> GUI включён, а `--without gui` даёт CLI-only пакет.
 
 ### Сборка для любой РЕД ОС (статическая musl, без glibc)
 
@@ -63,15 +75,13 @@ rpm -qp --qf '%{VENDOR}\n%{BUILDHOST}\n' migration-master-*.rpm
 sudo dnf install musl-gcc          # на Debian/Ubuntu CI: sudo apt install musl-tools
 rustup target add x86_64-unknown-linux-musl
 
-rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --with musl
+rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --with musl --without gui
 ```
 
 Ограничения опции `--with musl`:
 
-- только CLI и `migration-master-helper` (по умолчанию GUI и не собирается);
-- `--with gui` + `--with musl` → ошибка в `%build`: GTK4/libadwaita нельзя
-  линковать статически, GUI собирайте на самой РЕД ОС (`rpmbuild ... --with gui`
-  без musl);
+- только CLI и `migration-master-helper`: GTK4/libadwaita нельзя линковать
+  статически, поэтому GUI в musl-сборке отключается автоматически;
 - `%check` тоже выполняется под musl-тегом — нужен установленный target.
 
 Альтернатива без musl — собирать RPM прямо на РЕД ОС (или в chroot/mock с
@@ -85,22 +95,22 @@ rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --with musl
 
 ### Что делает spec
 
-- `%build` — `cargo build --release --locked` (CLI + helper);
-  с флагом `--with gui` дополнительно собирается GUI (`--features gui`).
+- `%build` — `cargo build --release --locked --features gui` (CLI + helper +
+  графический мастер); без GUI (`--without gui`) собирается только CLI;
 - `%check` — `cargo test --release --locked`: юнит-тесты архивов, шифрования,
-  path traversal, конфликтов, отмены и драйверов ресурсов.
+  path traversal, конфликтов, отмены и драйверов ресурсов. Для GUI-сборки
+  дополнительно проверяется, что бинарник линкует GTK4 (иначе в пакет попал бы
+  CLI-only вариант);
 - `%install` — ставит бинарники, helper, desktop-файл, иконку, AppStream,
   политику PolicyKit, примеры конфигурации и man-страницу.
 
 ### Сборка с GUI
 
-```bash
-rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --with gui
-```
+GUI включён по умолчанию, отдельный флаг не нужен:
 
-Без опции `--with gui` пакет содержит только CLI-часть: команда
-`migration-master gui` сообщит, что графический интерфейс не включён, и
-предложит консольный режим.
+```bash
+rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec
+```
 
 При сборке **не на самой РЕД ОС** (например, на CI под Ubuntu) добавляйте
 `--define "zigbuild 1"`: линковку выполнит zig cc против glibc версии не новее
@@ -108,11 +118,17 @@ rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --with gui
 пакет потребует `libc.so.6(GLIBC_2.xx)` новее целевой системы и не установится:
 
 ```bash
-rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --with gui --define "zigbuild 1"
+rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec --define "zigbuild 1"
 ```
 
 Так линкуются и CLI, и helper; в CI это делает workflow
 `.github/workflows/release-rpm.yml` (нужны zig и `cargo install cargo-zigbuild`).
+
+Графическая часть использует только GTK4 ≥ 4.0 и libadwaita ≥ 1.0 — это
+проверяется в CI по списку импортируемых символов (`objdump -T`), чтобы
+бинарник не тянул API libadwaita 1.4 (`adw_navigation_view_new` и подобные):
+на РЕД ОС 8 libadwaita 1.2, и такой вызов даёт «undefined symbol», то есть GUI
+не запускается.
 
 ## Проверка пакета
 
@@ -127,7 +143,7 @@ rpm -qpR ~/rpmbuild/RPMS/x86_64/migration-master-*.rpm
 ## Установка и smoke-тест
 
 ```bash
-sudo dnf install ./migration-master-0.1.2-1.x86_64.rpm
+sudo dnf install ./migration-master-0.1.3-1.x86_64.rpm
 
 migration-master --version
 migration-master scan --quick

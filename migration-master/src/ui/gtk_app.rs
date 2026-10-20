@@ -6,7 +6,9 @@
 
 #![cfg(all(feature = "gui", target_os = "linux"))]
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -30,12 +32,38 @@ use crate::wizard::{MigrationWizard, WizardConfig};
 
 /// Запустить графический интерфейс (блокирует поток до закрытия окна).
 pub fn run() -> Result<()> {
+    // GTK4 и libadwaitа инициализируются здесь же: без графической сессии
+    // (не задан DISPLAY/WAYLAND_DISPLAY, запуск из-под sudo) adw::init()
+    // возвращает ошибку. Раньше код молча выходил, и пользователь видел только
+    // пустой терминал — теперь причина выводится явно.
+    if let Err(error) = adw::init() {
+        crate::log_error!("gui", "не удалось инициализировать GTK: {}", error);
+        return Err(MigrationError::Unsupported(format!(
+            "не удалось открыть графическую сессию: {}. Проверьте, что запущена \
+             графическая подсистема (X11 или Wayland) и задан DISPLAY либо \
+             WAYLAND_DISPLAY; из-под sudo графический мастер не запускается — \
+             запускайте его от обычного пользователя",
+            error
+        )));
+    }
+    crate::log_info!(
+        "gui",
+        "GUI: GTK {}.{}.{}, libadwaita {}.{}.{}",
+        gtk::major_version(),
+        gtk::minor_version(),
+        gtk::micro_version(),
+        adw::major_version(),
+        adw::minor_version(),
+        adw::micro_version()
+    );
+
     let app = adw::Application::builder()
         .application_id(crate::APP_ID)
         .build();
 
     app.connect_activate(build_window);
     let _ = app.run();
+    crate::log_info!("gui", "GUI: сеанс завершён (версия {})", crate::VERSION);
     Ok(())
 }
 
@@ -44,18 +72,90 @@ fn default_home() -> PathBuf {
     crate::platform::home_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
+/// Развернуть «~» в начале пути в домашний каталог.
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    match path.strip_prefix("~") {
+        Ok(rest) => {
+            let mut result = default_home();
+            if !rest.as_os_str().is_empty() {
+                result.push(rest);
+            }
+            result
+        }
+        Err(_) => path,
+    }
+}
+
+/// Навигация по страницам мастера.
+///
+/// Собрана на `gtk::Stack`. Раньше здесь использовались `adw::NavigationView`,
+/// `adw::NavigationPage` и `adw::ToolbarView`, но эти виджеты появились только
+/// в libadwaita 1.4, а на РЕД ОС 8 доступна libadwaita 1.2: бинарник с такими
+/// вызовами не стартует («undefined symbol: adw_navigation_view_new»).
+/// Здесь используются только GTK4 и libadwaita 1.0.
+#[derive(Clone)]
+struct Navigator {
+    stack: gtk::Stack,
+    history: Rc<RefCell<Vec<gtk::Box>>>,
+}
+
+impl Navigator {
+    fn new() -> Self {
+        let stack = gtk::Stack::new();
+        stack.set_vexpand(true);
+        Self {
+            stack,
+            history: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    /// Показать стартовую страницу (кнопки «Назад» у неё нет).
+    fn set_root(&self, page: &gtk::Box) {
+        self.stack.add_child(page);
+        self.stack.set_visible_child(page);
+    }
+
+    /// Открыть страницу поверх текущей.
+    fn push(&self, page: &gtk::Box) {
+        self.stack.add_child(page);
+        self.stack.set_visible_child(page);
+        self.history.borrow_mut().push(page.clone());
+    }
+
+    /// Вернуться к предыдущей странице.
+    fn pop(&self) {
+        let previous = {
+            let mut history = self.history.borrow_mut();
+            if history.len() < 2 {
+                return;
+            }
+            let _ = history.pop();
+            history.last().cloned()
+        };
+        if let Some(previous) = previous {
+            self.stack.set_visible_child(&previous);
+        }
+    }
+}
+
+impl Default for Navigator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn build_window(app: &adw::Application) {
-    let nav = adw::NavigationView::new();
+    let nav = Navigator::new();
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Мастер миграции пользователя")
         .default_width(1000)
         .default_height(720)
-        .content(&nav)
+        .content(&nav.stack)
         .build();
 
-    let home = home_page(nav.clone(), window.clone());
-    let _ = nav.push(&home);
+    let home = home_page(&nav, &window);
+    nav.set_root(&home);
     window.present();
 }
 
@@ -69,18 +169,35 @@ fn content_box() -> gtk::Box {
     content
 }
 
-/// Обернуть содержимое в страницу навигации с заголовком и прокруткой.
-fn page(title: &str, content: &gtk::Box) -> adw::NavigationPage {
+/// Обернуть содержимое в страницу: заголовок, кнопка «Назад» и прокрутка.
+///
+/// Заменяет `adw::ToolbarView` + `adw::NavigationPage` (libadwaita 1.4) —
+/// на libadwaita 1.0/1.2 такой заголовок собирается из `adw::HeaderBar`
+/// и вертикального `gtk::Box`.
+fn page_frame(title: &str, content: &gtk::Box, nav: &Navigator, root: bool) -> gtk::Box {
     let header = adw::HeaderBar::new();
-    let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&header);
+    if !root {
+        let back = gtk::Button::from_icon_name("go-previous-symbolic");
+        back.set_tooltip_text(Some("Назад"));
+        let nav = nav.clone();
+        back.connect_clicked(move |_| nav.pop());
+        header.pack_start(&back);
+    }
+
+    let title_label = gtk::Label::new(Some(title));
+    title_label.add_css_class("title");
+    header.set_title_widget(Some(&title_label));
+
     let scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
         .child(content)
         .build();
-    toolbar.set_content(Some(&scroller));
-    adw::NavigationPage::new(&toolbar, title)
+
+    let page = gtk::Box::new(Orientation::Vertical, 0);
+    page.append(&header);
+    page.append(&scroller);
+    page
 }
 
 /// Строка «название — значение» для групп настроек.
@@ -117,13 +234,67 @@ fn action_row(title: &str, subtitle: &str, icon: &str) -> adw::ActionRow {
 }
 
 /// Диалог с сообщением (заменяет уведомления и используется для ошибок).
-#[allow(deprecated)]
+///
+/// `adw::MessageDialog` появился только в libadwaita 1.2, поэтому диалог
+/// собран вручную из `adw::Window` (доступен с libadwaita 1.0).
 fn show_message(window: &adw::ApplicationWindow, heading: &str, body: &str) {
-    let dialog = adw::MessageDialog::new(Some(window), Some(heading), Some(body));
-    dialog.add_response("close", "Закрыть");
-    dialog.set_default_response(Some("close"));
-    dialog.set_close_response("close");
+    let dialog = adw::Window::builder()
+        .transient_for(window)
+        .modal(true)
+        .default_width(460)
+        .build();
+
+    let content = gtk::Box::new(Orientation::Vertical, 12);
+    content.set_margin_top(24);
+    content.set_margin_bottom(24);
+    content.set_margin_start(24);
+    content.set_margin_end(24);
+
+    let title = gtk::Label::new(Some(heading));
+    title.add_css_class("title-2");
+    title.set_xalign(0.0);
+    title.set_wrap(true);
+    content.append(&title);
+
+    let text = gtk::Label::new(Some(body));
+    text.set_xalign(0.0);
+    text.set_wrap(true);
+    text.set_selectable(true);
+    content.append(&text);
+
+    let close = gtk::Button::with_label("Закрыть");
+    close.add_css_class("suggested-action");
+    close.set_halign(gtk::Align::End);
+    let dialog_for_close = dialog.clone();
+    close.connect_clicked(move |_| dialog_for_close.close());
+    content.append(&close);
+
+    dialog.set_content(Some(&content));
     dialog.present();
+}
+
+/// Поле ввода пароля.
+///
+/// `gtk::PasswordEntry` появился только в GTK 4.4, поэтому используется обычный
+/// `gtk::Entry` с переключателем видимости (работает на GTK 4.0 и новее).
+/// Возвращает само поле и контейнер с переключателем.
+fn password_entry() -> (gtk::Entry, gtk::Box) {
+    let entry = gtk::Entry::new();
+    entry.set_hexpand(true);
+    entry.set_visibility(false);
+    entry.set_input_purpose(gtk::InputPurpose::Password);
+
+    let toggle = gtk::CheckButton::with_label("Показать");
+    toggle.set_valign(gtk::Align::Center);
+    let entry_for_toggle = entry.clone();
+    toggle.connect_toggled(move |button| {
+        entry_for_toggle.set_visibility(button.is_active());
+    });
+
+    let container = gtk::Box::new(Orientation::Horizontal, 6);
+    container.append(&entry);
+    container.append(&toggle);
+    (entry, container)
 }
 
 /// Предупреждения о недоступных инструментах (§1).
@@ -161,7 +332,7 @@ fn warning_box(info: &MainScreenInfo) -> gtk::Box {
 }
 
 /// Главный экран (§1): сведения о системе и точки входа в сценарии.
-fn home_page(nav: adw::NavigationView, window: adw::ApplicationWindow) -> adw::NavigationPage {
+fn home_page(nav: &Navigator, window: &adw::ApplicationWindow) -> gtk::Box {
     let info = MainScreenInfo::collect();
     let content = content_box();
 
@@ -207,8 +378,8 @@ fn home_page(nav: adw::NavigationView, window: adw::ApplicationWindow) -> adw::N
         let nav = nav.clone();
         let window = window.clone();
         create.connect_activated(move |_| {
-            let page = create_page(window.clone());
-            let _ = nav.push(&page);
+            let page = create_page(&window, &nav);
+            nav.push(&page);
         });
     }
     list.append(&create);
@@ -222,8 +393,8 @@ fn home_page(nav: adw::NavigationView, window: adw::ApplicationWindow) -> adw::N
         let nav = nav.clone();
         let window = window.clone();
         ssh.connect_activated(move |_| {
-            let page = ssh_page(window.clone());
-            let _ = nav.push(&page);
+            let page = ssh_page(&window, &nav);
+            nav.push(&page);
         });
     }
     list.append(&ssh);
@@ -237,8 +408,8 @@ fn home_page(nav: adw::NavigationView, window: adw::ApplicationWindow) -> adw::N
         let nav = nav.clone();
         let window = window.clone();
         restore.connect_activated(move |_| {
-            let page = restore_page(window.clone());
-            let _ = nav.push(&page);
+            let page = restore_page(&window, &nav);
+            nav.push(&page);
         });
     }
     list.append(&restore);
@@ -251,8 +422,8 @@ fn home_page(nav: adw::NavigationView, window: adw::ApplicationWindow) -> adw::N
     {
         let nav = nav.clone();
         history.connect_activated(move |_| {
-            let page = history_page();
-            let _ = nav.push(&page);
+            let page = history_page(&nav);
+            nav.push(&page);
         });
     }
     list.append(&history);
@@ -265,8 +436,8 @@ fn home_page(nav: adw::NavigationView, window: adw::ApplicationWindow) -> adw::N
     {
         let nav = nav.clone();
         settings.connect_activated(move |_| {
-            let page = settings_page();
-            let _ = nav.push(&page);
+            let page = settings_page(&nav);
+            nav.push(&page);
         });
     }
     list.append(&settings);
@@ -274,11 +445,11 @@ fn home_page(nav: adw::NavigationView, window: adw::ApplicationWindow) -> adw::N
     actions.add(&list);
     content.append(&actions);
 
-    page("Migration Master", &content)
+    page_frame("Migration Master", &content, nav, true)
 }
 
 /// Страница создания архива профиля (режим «Локальный архив»).
-fn create_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
+fn create_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     let content = content_box();
 
     let form = adw::PreferencesGroup::builder()
@@ -297,10 +468,10 @@ fn create_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
         .build();
     form.add(&entry_row("Файл архива (.rmm)", &output_entry));
 
-    let pass_entry = gtk::PasswordEntry::builder().show_peek_icon(true).build();
+    let (pass_entry, pass_widget) = password_entry();
     form.add(&entry_row(
         "Пароль шифрования (не сохраняется)",
-        &pass_entry,
+        &pass_widget,
     ));
 
     let compression = gtk::SpinButton::with_range(0.0, 22.0, 1.0);
@@ -354,7 +525,7 @@ fn create_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
     content.append(&status);
 
     bind_create_action(
-        &window,
+        window,
         &run_button,
         &progress,
         &status,
@@ -366,7 +537,7 @@ fn create_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
         checks,
     );
 
-    page("Создать архив профиля", &content)
+    page_frame("Создать архив профиля", &content, nav, false)
 }
 
 /// Подключить обработчик кнопки «Создать архив».
@@ -378,7 +549,7 @@ fn bind_create_action(
     status: &gtk::Label,
     home_entry: &gtk::Entry,
     output_entry: &gtk::Entry,
-    pass_entry: &gtk::PasswordEntry,
+    pass_entry: &gtk::Entry,
     compression: &gtk::SpinButton,
     dry_check: &gtk::CheckButton,
     checks: Vec<(ComponentType, gtk::CheckButton)>,
@@ -399,7 +570,18 @@ fn bind_create_action(
 
     run_button.connect_clicked(move |_| {
         let source_home = PathBuf::from(home_entry.text().to_string());
-        let output = PathBuf::from(output_entry.text().to_string());
+        // Относительный путь к архиву отсчитываем от домашнего каталога:
+        // процесс GUI может быть запущен из произвольного каталога (ярлык
+        // в меню приложений), и относительный путь «против текущего
+        // каталога» там неожиданен для пользователя.
+        let output = {
+            let entered = expand_tilde(PathBuf::from(output_entry.text().to_string()));
+            if entered.is_absolute() {
+                entered
+            } else {
+                default_home().join(entered)
+            }
+        };
         let passphrase = {
             let text = pass_entry.text().to_string();
             if text.is_empty() {
@@ -449,7 +631,7 @@ fn bind_create_action(
             &progress,
             &status,
             move |observer| {
-                let items = scan_items(&source_home, &components)?;
+                let items = scan_items(&source_home, &components, Some(output.as_path()))?;
                 let options = CreateArchiveOptions {
                     output,
                     source_home,
@@ -486,7 +668,7 @@ fn bind_create_action(
 }
 
 /// Страница восстановления профиля из архива (§10).
-fn restore_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
+fn restore_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     let content = content_box();
 
     let form = adw::PreferencesGroup::builder()
@@ -502,8 +684,8 @@ fn restore_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
         .build();
     form.add(&entry_row("Каталог восстановления", &target_entry));
 
-    let pass_entry = gtk::PasswordEntry::builder().show_peek_icon(true).build();
-    form.add(&entry_row("Пароль шифрования (если есть)", &pass_entry));
+    let (pass_entry, pass_widget) = password_entry();
+    form.add(&entry_row("Пароль шифрования (если есть)", &pass_widget));
 
     let strategy_drop = gtk::DropDown::from_strings(&STRATEGY_LABELS);
     strategy_drop.set_selected(0);
@@ -549,7 +731,7 @@ fn restore_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
     content.append(&status);
 
     bind_restore_action(
-        &window,
+        window,
         &run_button,
         &progress,
         &status,
@@ -561,7 +743,7 @@ fn restore_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
         &dry_check,
     );
 
-    page("Восстановить из архива", &content)
+    page_frame("Восстановить из архива", &content, nav, false)
 }
 
 /// Подключить обработчик кнопки «Восстановить».
@@ -573,7 +755,7 @@ fn bind_restore_action(
     status: &gtk::Label,
     archive_entry: &gtk::Entry,
     target_entry: &gtk::Entry,
-    pass_entry: &gtk::PasswordEntry,
+    pass_entry: &gtk::Entry,
     strategy_drop: &gtk::DropDown,
     verify_check: &gtk::CheckButton,
     dry_check: &gtk::CheckButton,
@@ -670,7 +852,7 @@ fn bind_restore_action(
 }
 
 /// Страница прямой миграции по SSH (§9).
-fn ssh_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
+fn ssh_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     let content = content_box();
 
     let form = adw::PreferencesGroup::builder()
@@ -732,7 +914,7 @@ fn ssh_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
     content.append(&status);
 
     bind_ssh_action(
-        &window,
+        window,
         &run_button,
         &progress,
         &status,
@@ -741,7 +923,7 @@ fn ssh_page(window: adw::ApplicationWindow) -> adw::NavigationPage {
         &dry_check,
     );
 
-    page("Перенос по SSH", &content)
+    page_frame("Перенос по SSH", &content, nav, false)
 }
 
 /// Подключить обработчик кнопки «Начать перенос» (SSH).
@@ -833,7 +1015,7 @@ fn bind_ssh_action(
 }
 
 /// Страница истории операций из локальной базы SQLite (§16).
-fn history_page() -> adw::NavigationPage {
+fn history_page(nav: &Navigator) -> gtk::Box {
     let content = content_box();
     let text = gtk::Label::new(None);
     text.set_xalign(0.0);
@@ -841,7 +1023,7 @@ fn history_page() -> adw::NavigationPage {
     text.set_wrap(true);
     text.set_text(&load_history_text(40));
     content.append(&text);
-    page("История операций", &content)
+    page_frame("История операций", &content, nav, false)
 }
 
 /// Прочитать историю и отрендерить её в текст (ошибки — тоже текстом).
@@ -870,7 +1052,7 @@ fn load_history(limit: usize) -> Result<String> {
 }
 
 /// Страница настроек и диагностики (§1, §15).
-fn settings_page() -> adw::NavigationPage {
+fn settings_page(nav: &Navigator) -> gtk::Box {
     let content = content_box();
     let info = MainScreenInfo::collect();
 
@@ -940,13 +1122,32 @@ fn settings_page() -> adw::NavigationPage {
     about.add(&info_row("Приложение", crate::APP_NAME));
     about.add(&info_row("Версия", crate::VERSION));
     about.add(&info_row("Идентификатор", crate::APP_ID));
+    about.add(&info_row(
+        "Графическая среда",
+        &format!(
+            "GTK {}.{}.{}, libadwaita {}.{}.{}",
+            gtk::major_version(),
+            gtk::minor_version(),
+            gtk::micro_version(),
+            adw::major_version(),
+            adw::minor_version(),
+            adw::micro_version()
+        ),
+    ));
     content.append(&about);
 
-    page("Настройки и диагностика", &content)
+    page_frame("Настройки и диагностика", &content, nav, false)
 }
 
 /// Собрать элементы профиля для упаковки (как в CLI-команде `create`).
-fn scan_items(home: &std::path::Path, components: &[ComponentType]) -> Result<Vec<TransferItem>> {
+///
+/// `exclude` — файл, который не включается в архив (сам архив, если он лежит
+/// внутри сканируемого каталога: иначе прошлый архив попадает в новый).
+fn scan_items(
+    home: &std::path::Path,
+    components: &[ComponentType],
+    exclude: Option<&std::path::Path>,
+) -> Result<Vec<TransferItem>> {
     let config = WizardConfig {
         components: components.to_vec(),
         app_rules: crate::applications::load_effective_rules(),
@@ -954,7 +1155,11 @@ fn scan_items(home: &std::path::Path, components: &[ComponentType]) -> Result<Ve
     };
     let mut wizard = MigrationWizard::new(config);
     let inventory = wizard.scan()?.clone();
-    Ok(inventory.items)
+    let mut items = inventory.items;
+    if let Some(exclude) = exclude {
+        items.retain(|item| item.source != exclude);
+    }
+    Ok(items)
 }
 
 /// Состояние фоновой операции, публикуемое для GTK-потока.

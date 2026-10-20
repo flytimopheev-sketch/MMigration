@@ -64,7 +64,7 @@
 
 - РЕД ОС Linux (x86_64)
 - Rust 1.75+
-- GTK4 + libadwaita (для GUI)
+- GTK4 ≥ 4.0 и libadwaita ≥ 1.0 (для GUI; на РЕД ОС 8 — `gtk4` и `libadwaita`)
 - OpenSSH клиент
 - CUPS (для работы с принтерами)
 
@@ -102,10 +102,10 @@ cargo build --features gui --release
 
 ```bash
 # Скачать последний релиз
-gh release download v0.1.2 -p '*.rpm'
+gh release download v0.1.3 -p '*.rpm'
 
 # Установить на РЕД ОС
-sudo dnf install ./migration-master-0.1.2-1.x86_64.rpm
+sudo dnf install ./migration-master-0.1.3-1.x86_64.rpm
 ```
 
 Пакет собирается в CI на Linux (без Docker): workflow
@@ -117,11 +117,12 @@ sudo dnf install ./migration-master-0.1.2-1.x86_64.rpm
 cargo-zigbuild с потолком glibc 2.28: бинарники не зависят от версии glibc
 хоста CI и устанавливаются на РЕД ОС (раньше установка падала с
 `libc.so.6(GLIBC_2.xx)(64bit) is needed`) — см. [Сборка RPM](docs/BUILD_RPM.md).
-Статический musl-вариант (только CLI) собирается ручным запуском workflow
-с параметром `variant=musl`.
+Статический musl-вариант (только CLI, без GUI) собирается ручным запуском
+workflow с параметром `variant=musl`.
 
-Проверка кода — workflow `.github/workflows/rust.yml`: `cargo fmt --check`,
-`clippy -D warnings`, сборка и тесты CLI, а также сборка GUI с `--features gui`.
+> Проверка кода — workflow `.github/workflows/rust.yml`: `cargo fmt --check`,
+> `clippy -D warnings --all-features` (включая GUI-код), сборка и тесты CLI
+> и GUI.
 
 ## Установка
 
@@ -192,10 +193,19 @@ cargo build --features gui --release
 ./target/release/migration-master gui
 ```
 
+Требования к графической подсистеме: **GTK4 ≥ 4.0** и **libadwaita ≥ 1.0**
+(мастер намеренно не использует API libadwaita 1.4 — `NavigationView`,
+`ToolbarView`, — и API GTK 4.4 — `PasswordEntry`, иначе бинарник не запустился
+бы на РЕД ОС 8 с libadwaita 1.2: «undefined symbol: adw_navigation_view_new»).
+
 Мастер открывает главный экран со сведениями о системе и точками входа:
 создание архива профиля, прямой перенос по SSH, восстановление из архива,
 история операций и диагностика. Долгие операции выполняются в фоновом потоке
 с индикатором прогресса, результат показывается диалогом.
+
+Если графическая сессия недоступна (нет `DISPLAY`/`WAYLAND_DISPLAY`, запуск
+из-под `sudo`), команда `gui` выводит причину и подсказку, а не завершается
+молча.
 
 На других платформах (и без фичи `gui`) команда `gui` возвращает понятную
 ошибку с подсказкой использовать консольный режим.

@@ -45,9 +45,14 @@ cargo test --features gui
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
+
+`--all-features` обязателен: без него GUI-код (`src/ui/gtk_app.rs`) вообще не
+компилируется и не проверяется линтером — именно так в релиз попал вызов
+API libadwaita 1.4, из-за которого графический мастер не запускался на
+РЕД ОС 8.
 
 Чек-лист по коду:
 
@@ -56,7 +61,9 @@ cargo test
 - новые пути проходят `security::validate_path`/`safe_join` (path traversal);
 - секреты не попадают в `serde`-структуры (`skip_serializing`), логи и отчёты;
 - долгие операции проверяют токен отмены (`cancel`);
-- есть тесты на ветку «ошибка» и на «dry-run».
+- есть тесты на ветку «ошибка» и на «dry-run»;
+- GUI использует только GTK4 4.0 и libadwaita 1.0 (без `v1_2`/`v1_4`-фич и
+  без API новее — иначе мастер не стартует на РЕД ОС 8).
 
 ## Добавление компонента переноса
 

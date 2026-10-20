@@ -114,11 +114,13 @@ jobs:
           # проверку пропускаем (на РЕД ОС spec собирается как обычно).
           if [ "${{ inputs.variant }}" = "musl" ]; then
             # musl-вариант: статические бинарники без зависимостей от glibc —
-            # установка на любую РЕД ОС (только CLI, без GUI).
+            # установка на любую РЕД ОС (только CLI, без GUI: GTK4 нельзя
+            # линковать статически).
             rpmbuild -bb --nodeps ~/rpmbuild/SPECS/migration-master.spec \
               --define "_topdir $HOME/rpmbuild" \
               --define "version ${VERSION}" \
-              --with musl
+              --with musl \
+              --without gui
           else
             # GUI-вариант по умолчанию: zig cc линкует бинарники против glibc
             # не новее 2.28 (glibc_floor в spec) — пакет с GUI устанавливается
@@ -194,6 +196,17 @@ jobs:
             echo "::error::Бинарник собран без фичи gui"
             exit 1
           fi
+          # 4) Бинарник не должен требовать API новее libadwaita 1.0 и GTK 4.0:
+          #    на РЕД ОС 8 стоит libadwaita 1.2, и вызов adw_navigation_view_new
+          #    (libadwaita 1.4) приводит к «undefined symbol» — GUI не стартует.
+          echo "== Проверка версионных символов =="
+          UNDEF=$(objdump -T "$BIN" | awk '$2 == "*UND*" { print $NF }' | sort -u)
+          FORBIDDEN='adw_navigation_|adw_toolbar_view|adw_breakpoint|adw_view_switcher|adw_split_button|adw_switch_row|adw_spin_row|adw_message_dialog|adw_about_window|adw_alert_dialog|adw_banner|adw_spinner|adw_preferences_window|adw_password_view_row|adw_tab_view|adw_bottom_sheet|adw_entry_row|gtk_password_entry|gtk_column_view|gtk_list_view|gtk_grid_view|gtk_file_dialog|gtk_alert_dialog'
+          if echo "$UNDEF" | grep -E "$FORBIDDEN"; then
+            echo "::error::Бинарник ссылается на API GTK4/libadwaita новее базовой версии — GUI не запустится на РЕД ОС 8"
+            exit 1
+          fi
+          echo "OK: используются только GTK4 4.0 и libadwaita 1.0"
           rm -rf "$TMP"
           echo "OK: GUI-код запускается (ошибка дисплея в CI ожидаема)."
 
