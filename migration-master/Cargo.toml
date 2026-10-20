@@ -33,7 +33,7 @@ flate2 = "1.0"
 age = { version = "0.12", features = ["armor"] }
 
 # Hashing
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 
 # CLI
