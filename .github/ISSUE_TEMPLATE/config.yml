@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Установка и эксплуатация
+    url: https://github.com/flytimopheev-sketch/MMigration/blob/main/migration-master/docs/INSTALL.md
+    about: Требования, зависимости, установка RPM и сборка из исходников.
+  - name: Устранение неполадок
+    url: https://github.com/flytimopheev-sketch/MMigration/blob/main/migration-master/docs/TROUBLESHOOTING.md
+    about: Типовые ошибки запуска, GUI, архивов, SSH и PolicyKit.
+  - name: Безопасность
+    url: https://github.com/flytimopheev-sketch/MMigration/blob/main/SECURITY.md
+    about: Как сообщить об уязвимости, не публикуя детали в issue.

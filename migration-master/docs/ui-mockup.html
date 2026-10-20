@@ -128,9 +128,9 @@
 
 <div class="meta">
   <h1>Migration Master — макет интерфейса</h1>
-  <p>Визуализация GTK4 / libadwaita мастера миграции пользователя для РЕД ОС Linux. Реализовано в <code>src/ui/gtk_app.rs</code>.</p>
+  <p>Визуализация GTK4 / libadwaita мастера миграции пользователя для РЕД ОС Linux. Реализовано в <code>src/ui/gtk_app.rs</code>. Тёмная тема — как в РЕД ОС.</p>
   <div class="note">
-    Макет отражает реальные виджеты приложения: <b>adw::NavigationView</b> + <b>adw::ToolbarView</b> + <b>HeaderBar</b>,
+    Макет отражает реальные виджеты приложения: <b>gtk::Stack</b> (навигация) + <b>adw::HeaderBar</b>,
     группы <b>adw::PreferencesGroup</b>/<b>ActionRow</b>, <b>gtk::ProgressBar</b>. Панели сверху и слева — служебные, только для анализа макета.
   </div>
 </div>

@@ -7,3 +7,8 @@ migration-master/resources/com.redos.migration-master.policy text eol=lf
 migration-master/resources/examples/* text eol=lf
 migration-master/src/** text eol=lf
 migration-master/docs/** text eol=lf
+
+# Скриншоты — бинарные файлы: нормализация переводов строк испортила бы PNG.
+# Правило ниже перекрывает общее правило для docs/** (последнее совпадение
+# выигрывает).
+migration-master/docs/screenshots/*.png -text -diff -merge -eol

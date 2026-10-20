@@ -1,0 +1,38 @@
+name: Предложение
+description: Предложить функцию или улучшение
+title: "[Функция] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Опишите идею и сценарий использования — так проще обсудить детали.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую задачу решает
+      description: Опишите ситуацию, в которой текущих возможностей не хватает.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Предлагаемое решение
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Рассмотренные альтернативы
+    validations:
+      required: false
+  - type: checkboxes
+    id: area
+    attributes:
+      label: Область
+      options:
+        - label: Графический мастер (GUI)
+        - label: Консольный интерфейс (CLI)
+        - label: Упаковка и релизы
+        - label: Документация
+        - label: Безопасность

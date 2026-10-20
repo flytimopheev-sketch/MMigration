@@ -1,0 +1,66 @@
+name: Ошибка
+description: Сообщить о проблеме в Migration Master
+title: "[Ошибка] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за отчёт! Пожалуйста, заполните поля ниже — это сильно ускоряет разбор.
+
+        ⚠️ Не прикладывайте пароли, приватные SSH-ключи и содержимое архивов `.rmm`.
+  - type: input
+    id: version
+    attributes:
+      label: Версия приложения
+      placeholder: "migration-master 0.1.3 (RPM 0.1.3-1)"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: ОС и версия
+      options:
+        - РЕД ОС 8.x
+        - РЕД ОС 7.x
+        - Другая РЕД ОС
+        - Другой дистрибутив
+        - Не применимо
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Где проявляется
+      options:
+        - Графический мастер (GUI)
+        - Консольный интерфейс (CLI)
+        - Установка/обновление пакета
+        - Сборка из исходников
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Что произошло
+      description: Опишите, что вы делали и что получилось вместо ожидаемого.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Журнал
+      description: |
+        Вывод команды и журнал (без паролей и ключей):
+        ```
+        tail -100 ~/.local/share/migration-master/logs/migration-master.log
+        ```
+      render: shell
+    validations:
+      required: false
