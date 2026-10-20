@@ -20,11 +20,17 @@
   </description>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0</project_license>
-  <url type="homepage">https://github.com/redos/migration-master</url>
+  <url type="homepage">https://github.com/flytimopheev-sketch/MMigration</url>
+  <url type="bugtracker">https://github.com/flytimopheev-sketch/MMigration/issues</url>
+  <url type="vcs-browser">https://github.com/flytimopheev-sketch/MMigration</url>
   <screenshots>
     <screenshot type="default">
       <caption>Главный экран мастера миграции</caption>
-      <image>https://github.com/redos/migration-master/raw/main/screenshots/main.png</image>
+      <image>https://raw.githubusercontent.com/flytimopheev-sketch/MMigration/main/migration-master/docs/screenshots/main.png</image>
+    </screenshot>
+    <screenshot type="default">
+      <caption>Создание зашифрованного архива профиля</caption>
+      <image>https://raw.githubusercontent.com/flytimopheev-sketch/MMigration/main/migration-master/docs/screenshots/create-archive.png</image>
     </screenshot>
   </screenshots>
   <provides>

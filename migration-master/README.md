@@ -291,5 +291,7 @@ GPL-3.0
 
 ## Контакты
 
-- Repository: https://github.com/redos/migration-master
-- Issue Tracker: https://github.com/redos/migration-master/issues
+- Repository: https://github.com/flytimopheev-sketch/MMigration
+- Issue Tracker: https://github.com/flytimopheev-sketch/MMigration/issues
+- Releases: https://github.com/flytimopheev-sketch/MMigration/releases
+- Team: team@redos.local
