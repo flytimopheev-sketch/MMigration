@@ -12,10 +12,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-// adw::prelude::* содержит трейты adw, но не gtk::prelude::IsA,
-// поэтому импортируем прелюдию gtk4 отдельным glob-импортом.
+// adw::prelude::* реэкспортирует и gtk::prelude::* (там, в частности, IsA),
+// поэтому отдельного импорта GTK4-прелюдии не требуется.
 use adw::prelude::*;
-use gtk::prelude::*;
 use gtk::{glib, Orientation};
 
 use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};

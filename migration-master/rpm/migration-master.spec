@@ -12,10 +12,10 @@ Source0:        %{name}-%{version}.tar.gz
 # пакет собран на системе с более новым glibc, например на Debian CI).
 %bcond_with musl
 # Графический мастер (GTK4 + libadwaita) ВКЛЮЧЁН ПО УМОЛЧАНИЮ.
-# Раньше здесь стоял `%bcond_with gui`, и обычная сборка `rpmbuild -bb` давала
-# пакет только с CLI: команда `migration-master gui` отвечала «графический
-# интерфейс недоступен». Теперь GUI собирается всегда, а CLI-only вариант
-# получается явным флагом `--without gui`.
+# Раньше bcond gui был объявлен как bcond_with, и обычная сборка `rpmbuild -bb`
+# давала пакет только с CLI: команда `migration-master gui` отвечала
+# «графический интерфейс недоступен». Теперь GUI собирается всегда, а CLI-only
+# вариант получается явным флагом `--without gui`.
 %bcond_without gui
 
 # musl-линковка несовместима с GUI: GTK4/libadwaita нельзя линковать статически.
@@ -118,7 +118,13 @@ cargo build --release --locked
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
 cargo test --release --locked --target x86_64-unknown-linux-musl
 %else
+%if %{build_gui}
+# Тесты — с той же фичей gui, что и сборка: иначе cargo пересоберёт бинарник
+# без графической части и в пакет попадёт CLI-only вариант.
+cargo test --release --locked --features gui
+%else
 cargo test --release --locked
+%endif
 %endif
 %if %{build_gui}
 # Пакет без GUI — это ровно тот баг, из-за которого `migration-master gui`
@@ -190,7 +196,7 @@ fi
   мастер запускается на РЕД ОС 8 с libadwaita 1.2
 - При запуске GUI выводится понятная причина сбоя (нет графической сессии,
   DISPLAY/WAYLAND_DISPLAY), а не пустой терминал
-- В %check проверяется, что бинарник линкует GTK4
+- В секции check пакета проверяется, что бинарник линкует GTK4
 - Пакеты gtk4 и libadwaita добавлены в Recommends (RPM тянет их из репозитория)
 
 * Fri Oct 09 2026 Migration Master Team <team@redos.local> - 0.1.2-1
