@@ -7,6 +7,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Мажорные обновления ломают сборку чаще, чем приносят пользу:
+    # обновляются только minor и patch, мажорные — вручную.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       rust-dependencies:
         patterns:
