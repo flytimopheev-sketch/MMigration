@@ -15,6 +15,8 @@ use std::time::Duration;
 // adw::prelude::* реэкспортирует и gtk::prelude::* (там, в частности, IsA),
 // поэтому отдельного импорта GTK4-прелюдии не требуется.
 use adw::prelude::*;
+// quit() живёт в gio::prelude::ApplicationExt — в прелюдии adw его нет.
+use adw::gio::prelude::ApplicationExt as _;
 use gtk::{glib, Orientation};
 
 use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
@@ -45,25 +47,94 @@ pub fn run() -> Result<()> {
             error
         )));
     }
-    crate::log_info!(
-        "gui",
-        "GUI: GTK {}.{}.{}, libadwaita {}.{}.{}",
+
+    // Диагностика окружения — в stderr и в журнал: по ней видно, с какими
+    // версиями GTK4/libadwaita запустился мастер.
+    let environment = format!(
+        "GUI: GTK {}.{}.{}, libadwaita {}.{}.{}, display={}",
         gtk::major_version(),
         gtk::minor_version(),
         gtk::micro_version(),
         adw::major_version(),
         adw::minor_version(),
-        adw::micro_version()
+        adw::micro_version(),
+        display_name()
     );
+    eprintln!("{}", environment);
+    crate::log_info!("gui", "{}", environment);
 
     let app = adw::Application::builder()
         .application_id(crate::APP_ID)
         .build();
 
+    if selftest_requested() {
+        return run_selftest(app);
+    }
+
     app.connect_activate(build_window);
     let _ = app.run();
     crate::log_info!("gui", "GUI: сеанс завершён (версия {})", crate::VERSION);
     Ok(())
+}
+
+/// Режим самопроверки: создать окно, дождаться его показа и выйти с кодом 0.
+///
+/// Нужен для диагностики «GUI не запускается»: собирает то же окно, что и
+/// обычный запуск, но не ждёт действий пользователя. Включается переменной
+/// окружения `MIGRATION_MASTER_GUI_SELFTEST=1` (используется в CI под Xvfb).
+fn run_selftest(app: adw::Application) -> Result<()> {
+    let app_for_timeout = app.clone();
+    // Если окно так и не показали (например, сломался компоновщик) — выходим
+    // с ошибкой, а не молча.
+    glib::timeout_add_local(Duration::from_secs(10), move || {
+        if !SELFTEST_OK.with(|flag| flag.get()) {
+            eprintln!("GUI: окно не было показано за 10 секунд — самопроверка не пройдена");
+            crate::log_error!("gui", "самопроверка: окно не показано");
+            app_for_timeout.quit();
+        }
+        glib::ControlFlow::Break
+    });
+
+    app.connect_activate(|app| {
+        let window = create_main_window(app);
+        let app_for_quit = app.clone();
+        window.connect_map(move |_| {
+            eprintln!("GUI: окно создано и показано — самопроверка пройдена");
+            crate::log_info!("gui", "самопроверка: окно показано");
+            SELFTEST_OK.with(|flag| flag.set(true));
+            app_for_quit.quit();
+        });
+        window.present();
+    });
+
+    let _ = app.run();
+    if SELFTEST_OK.with(|flag| flag.get()) {
+        Ok(())
+    } else {
+        Err(MigrationError::Unsupported(
+            "графический мастер не смог показать окно".to_string(),
+        ))
+    }
+}
+
+/// Запрошена ли самопроверка GUI.
+fn selftest_requested() -> bool {
+    std::env::var("MIGRATION_MASTER_GUI_SELFTEST")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+thread_local! {
+    /// Результат самопроверки GUI: окно создано и показано.
+    static SELFTEST_OK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Имя текущего дисплея (для диагностики).
+fn display_name() -> String {
+    std::env::var("WAYLAND_DISPLAY")
+        .map(|name| format!("wayland:{}", name))
+        .or_else(|_| std::env::var("DISPLAY").map(|name| format!("x11:{}", name)))
+        .unwrap_or_else(|_| "нет".to_string())
 }
 
 /// Домашний каталог пользователя (для значений по умолчанию).
@@ -109,9 +180,14 @@ impl Navigator {
     }
 
     /// Показать стартовую страницу (кнопки «Назад» у неё нет).
+    ///
+    /// Корневая страница тоже попадает в историю: без этого кнопка «Назад»
+    /// на первой подстранице ничего не делала — глубина истории была 1,
+    /// а `pop()` требует минимум 2.
     fn set_root(&self, page: &gtk::Box) {
         self.stack.add_child(page);
         self.stack.set_visible_child(page);
+        self.history.borrow_mut().push(page.clone());
     }
 
     /// Открыть страницу поверх текущей.
@@ -143,7 +219,8 @@ impl Default for Navigator {
     }
 }
 
-fn build_window(app: &adw::Application) {
+/// Создать главное окно мастера (без показа).
+fn create_main_window(app: &adw::Application) -> adw::ApplicationWindow {
     let nav = Navigator::new();
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -155,6 +232,11 @@ fn build_window(app: &adw::Application) {
 
     let home = home_page(&nav, &window);
     nav.set_root(&home);
+    window
+}
+
+fn build_window(app: &adw::Application) {
+    let window = create_main_window(app);
     window.present();
 }
 

@@ -56,3 +56,76 @@ jobs:
     - name: Run tests (GUI, feature gui)
       working-directory: migration-master
       run: cargo test --verbose --features gui
+
+  # Самопроверка GUI на настоящем дисплее: окно должно создаться и показаться.
+  # Раньше GUI проверялся только на отсутствие ошибки запуска, поэтому
+  # «окно мелькнуло и закрылось» не ловилось.
+  gui-smoke:
+    name: GUI smoke test (Xvfb, libadwaita 1.5)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Установить зависимости
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-4-dev libadwaita-1-dev xvfb dbus dbus-x11
+
+    - name: Показать версии GTK4 и libadwaita
+      run: |
+        pkg-config --modversion gtk4
+        pkg-config --modversion libadwaita-1
+
+    - name: Собрать GUI
+      working-directory: migration-master
+      run: cargo build --release --features gui
+
+    - name: Самопроверка GUI под виртуальным дисплеем
+      working-directory: migration-master
+      run: |
+        set -o pipefail
+        MIGRATION_MASTER_GUI_SELFTEST=1 xvfb-run -a dbus-run-session -- \
+          ./target/release/migration-master gui 2>&1 | tee gui-selftest.log
+
+  # То же самое, но на libadwaita 1.2 (Debian 12) — как на РЕД ОС 8.
+  # Этот джоб ловит несовместимость с целевой платформой: GTK4 4.8 +
+  # libadwaita 1.2, без API новее.
+  gui-smoke-redos:
+    name: GUI smoke test (Xvfb, libadwaita 1.2 — как на РЕД ОС 8)
+    runs-on: ubuntu-latest
+    container: debian:12
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Установить зависимости
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          git build-essential pkg-config curl ca-certificates \
+          libgtk-4-dev libadwaita-1-dev libglib2.0-dev libgirepository1.0-dev \
+          libpango1.0-dev libcairo2-dev libssl-dev libsqlite3-dev libcups2-dev \
+          xvfb dbus dbus-x11
+
+    - name: Показать версии GTK4 и libadwaita
+      run: |
+        pkg-config --modversion gtk4
+        pkg-config --modversion libadwaita-1
+
+    - name: Установить Rust
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y --profile minimal --default-toolchain stable
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+    - name: Собрать GUI
+      working-directory: migration-master
+      run: cargo build --release --features gui
+
+    - name: Самопроверка GUI под виртуальным дисплеем
+      working-directory: migration-master
+      run: |
+        set -o pipefail
+        MIGRATION_MASTER_GUI_SELFTEST=1 xvfb-run -a dbus-run-session -- \
+          ./target/release/migration-master gui 2>&1 | tee gui-selftest.log
