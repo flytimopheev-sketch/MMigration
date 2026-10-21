@@ -96,6 +96,11 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:12
 
+    defaults:
+      run:
+        # В контейнере Debian shell по умолчанию — dash, без `set -o pipefail`.
+        shell: bash
+
     steps:
     - uses: actions/checkout@v4
 
