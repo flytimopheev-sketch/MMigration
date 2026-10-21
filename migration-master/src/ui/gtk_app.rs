@@ -15,8 +15,6 @@ use std::time::Duration;
 // adw::prelude::* реэкспортирует и gtk::prelude::* (там, в частности, IsA),
 // поэтому отдельного импорта GTK4-прелюдии не требуется.
 use adw::prelude::*;
-// quit() живёт в gio::prelude::ApplicationExt — в прелюдии adw его нет.
-use adw::gio::prelude::ApplicationExt as _;
 use gtk::{glib, Orientation};
 
 use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
@@ -65,7 +63,19 @@ pub fn run() -> Result<()> {
 
     let app = adw::Application::builder()
         .application_id(crate::APP_ID)
+        .flags(adw::gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
+
+    // GApplication по умолчанию считает аргументы командной строки файлами
+    // для открытия. Из-за этого `migration-master gui` приводил к
+    // «GLib-GIO-CRITICAL: This application can not open files.» и выходу с
+    // кодом 1 — окно не появлялось (и с ярлыка в меню тоже).
+    // Командную строку разбирает clap, поэтому GApplication получает
+    // пустую команду, а показать окно мы вызываем сами.
+    app.connect_command_line(|app, _command_line| {
+        app.activate();
+        0
+    });
 
     if selftest_requested() {
         return run_selftest(app);
