@@ -111,7 +111,7 @@ jobs:
           git build-essential pkg-config curl ca-certificates \
           libgtk-4-dev libadwaita-1-dev libglib2.0-dev libgirepository1.0-dev \
           libpango1.0-dev libcairo2-dev libssl-dev libsqlite3-dev libcups2-dev \
-          xvfb dbus dbus-x11
+          xvfb xauth dbus dbus-x11
 
     - name: Показать версии GTK4 и libadwaita
       run: |
