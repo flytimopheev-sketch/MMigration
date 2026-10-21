@@ -14,7 +14,7 @@ rpmdev-setuptree
 
 ```bash
 cd ~/rpmbuild/SOURCES
-tar czf migration-master-0.1.3.tar.gz --transform 's,^,migration-master-0.1.3/,' \
+tar czf migration-master-0.1.4.tar.gz --transform 's,^,migration-master-0.1.4/,' \
     -C /путь/к/репозиторию migration-master
 ```
 
@@ -31,7 +31,7 @@ cp rpm/migration-master.spec ~/rpmbuild/SPECS/
 rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec
 ```
 
-Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.1.3-1.<dist>.x86_64.rpm`.
+Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.1.4-1.<dist>.x86_64.rpm`.
 
 **Графический мастер собирается по умолчанию.** Пакет без GUI получается
 явным флагом `--without gui`:
@@ -143,7 +143,7 @@ rpm -qpR ~/rpmbuild/RPMS/x86_64/migration-master-*.rpm
 ## Установка и smoke-тест
 
 ```bash
-sudo dnf install ./migration-master-0.1.3-1.x86_64.rpm
+sudo dnf install ./migration-master-0.1.4-1.x86_64.rpm
 
 migration-master --version
 migration-master scan --quick

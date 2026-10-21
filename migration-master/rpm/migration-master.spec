@@ -1,5 +1,5 @@
 Name:           migration-master
-Version:        0.1.3
+Version:        0.1.4
 Release:        1%{?dist}
 Summary:        Мастер миграции пользователя для РЕД ОС Linux
 License:        GPL-3.0
@@ -188,6 +188,15 @@ fi
 %{_mandir}/man1/migration-master.1.gz
 
 %changelog
+* Wed Oct 21 2026 Migration Master Team <team@redos.local> - 0.1.4-1
+- Исправлен запуск графического мастера: GApplication считал аргумент «gui»
+  файлом для открытия и завершал приложение с «GLib-GIO-CRITICAL: This
+  application can not open files.» — окно не появлялось. Приложение само
+  обрабатывает сигнал command-line и показывает окно через activate()
+- Добавлена самопроверка GUI (MIGRATION_MASTER_GUI_SELFTEST=1) и CI-тесты под
+  виртуальным дисплеем на libadwaita 1.5 и 1.2 (окружение РЕД ОС 8)
+- Исправлена кнопка «Назад» в графическом мастере
+
 * Tue Oct 20 2026 Migration Master Team <team@redos.local> - 0.1.3-1
 - Графический мастер включён по умолчанию: обычная сборка `rpmbuild -bb`
   больше не даёт пакет только с CLI (было: «графический интерфейс недоступен»)
