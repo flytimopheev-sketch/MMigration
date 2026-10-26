@@ -13,7 +13,7 @@ body:
     id: version
     attributes:
       label: Версия приложения
-      placeholder: "migration-master 0.1.4 (RPM 0.1.4-1)"
+      placeholder: "migration-master 0.1.5 (RPM 0.1.5-1)"
     validations:
       required: true
   - type: dropdown

@@ -3,7 +3,7 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [Не выпущено]
+## [0.1.5] — 2026-10-26
 
 ### Исправлено
 
@@ -103,6 +103,7 @@
 - Первая версия пакета: создание зашифрованных архивов, миграция по SSH,
   перенос настроек приложений и SSH-ключей, интеграция с CUPS.
 
+[0.1.5]: https://github.com/flytimopheev-sketch/MMigration/releases/tag/v0.1.5
 [0.1.4]: https://github.com/flytimopheev-sketch/MMigration/releases/tag/v0.1.4
 [0.1.3]: https://github.com/flytimopheev-sketch/MMigration/releases/tag/v0.1.3
 [0.1.2]: https://github.com/flytimopheev-sketch/MMigration/releases/tag/v0.1.2

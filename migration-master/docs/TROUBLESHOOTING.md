@@ -217,7 +217,7 @@ rpm -qR migration-master | grep -E 'gtk|adwaita'
 `rpmbuild --without gui`). Поставьте обычный релизный RPM с GUI:
 
 ```bash
-sudo dnf install ./migration-master-0.1.4-1.x86_64.rpm
+sudo dnf install ./migration-master-0.1.5-1.x86_64.rpm
 ```
 
 Сборка из исходников с графической частью:
