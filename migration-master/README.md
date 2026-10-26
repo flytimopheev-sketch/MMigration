@@ -106,10 +106,10 @@ cargo build --features gui --release
 
 ```bash
 # Скачать последний релиз
-gh release download v0.1.3 -p '*.rpm'
+gh release download v0.1.4 -p '*.rpm'
 
 # Установить на РЕД ОС
-sudo dnf install ./migration-master-0.1.3-1.x86_64.rpm
+sudo dnf install ./migration-master-0.1.4-1.x86_64.rpm
 ```
 
 Пакет собирается в CI на Linux (без Docker): workflow

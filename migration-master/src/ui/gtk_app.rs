@@ -82,9 +82,21 @@ pub fn run() -> Result<()> {
     }
 
     app.connect_activate(build_window);
-    let _ = app.run();
-    crate::log_info!("gui", "GUI: сеанс завершён (версия {})", crate::VERSION);
-    Ok(())
+    // Код возврата g_application_run() не выбрасываем: если приложение не
+    // зарегистрировалось в D-Bus или завершилось с ошибкой, команда
+    // `migration-master gui` должна вернуть ненулевой код, а не сообщать
+    // об успехе.
+    let exit_code = app.run();
+    if exit_code == glib::ExitCode::SUCCESS {
+        crate::log_info!("gui", "GUI: сеанс завершён (версия {})", crate::VERSION);
+        Ok(())
+    } else {
+        crate::log_error!("gui", "GUI: сеанс завершён с кодом {}", exit_code.value());
+        Err(MigrationError::Unsupported(format!(
+            "графический мастер завершился с кодом {}",
+            exit_code.value()
+        )))
+    }
 }
 
 /// Режим самопроверки: создать окно, дождаться его показа и выйти с кодом 0.
@@ -246,6 +258,19 @@ fn create_main_window(app: &adw::Application) -> adw::ApplicationWindow {
 }
 
 fn build_window(app: &adw::Application) {
+    // Повторный запуск (второй клик по ярлыку в меню, повторная команда
+    // `migration-master gui`) приходит уже в запущенный экземпляр: GApplication
+    // с HANDLES_COMMAND_LINE вызывает activate(). Показываем существующее окно,
+    // а не создаём второе.
+    if let Some(window) = app
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<adw::ApplicationWindow>().ok())
+    {
+        window.present();
+        return;
+    }
+
     let window = create_main_window(app);
     window.present();
 }
@@ -660,7 +685,7 @@ fn bind_create_action(
     let button = run_button.clone();
 
     run_button.connect_clicked(move |_| {
-        let source_home = PathBuf::from(home_entry.text().to_string());
+        let source_home = expand_tilde(PathBuf::from(home_entry.text().to_string()));
         // Относительный путь к архиву отсчитываем от домашнего каталога:
         // процесс GUI может быть запущен из произвольного каталога (ярлык
         // в меню приложений), и относительный путь «против текущего
@@ -865,8 +890,8 @@ fn bind_restore_action(
     let button = run_button.clone();
 
     run_button.connect_clicked(move |_| {
-        let archive = PathBuf::from(archive_entry.text().to_string());
-        let target_root = PathBuf::from(target_entry.text().to_string());
+        let archive = expand_tilde(PathBuf::from(archive_entry.text().to_string()));
+        let target_root = expand_tilde(PathBuf::from(target_entry.text().to_string()));
         let passphrase = {
             let text = pass_entry.text().to_string();
             if text.is_empty() {
@@ -1328,7 +1353,19 @@ where
     let _ = glib::timeout_add_local(Duration::from_millis(150), move || {
         let snapshot = match state.lock() {
             Ok(snapshot) => snapshot.clone(),
-            Err(_) => return glib::ControlFlow::Break,
+            Err(poisoned) => {
+                // Фоновый поток запаниковал, удерживая блокировку. Раньше опрос
+                // просто прекращался: кнопка оставалась неактивной, а в статусе
+                // навсегда оставалось «Подготовка…». Теперь показываем ошибку
+                // и возвращаем кнопку в рабочее состояние.
+                let mut guard = poisoned.into_inner();
+                guard.finished = true;
+                guard.success = false;
+                guard.message = "Ошибка".to_string();
+                guard.summary =
+                    "внутренняя ошибка: фоновая операция завершилась аварийно".to_string();
+                guard.clone()
+            }
         };
         bar.set_fraction(snapshot.fraction);
         let percent_text = format!("{}%", (snapshot.fraction * 100.0).round() as i64);
@@ -1343,4 +1380,25 @@ where
             glib::ControlFlow::Continue
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_tilde_uses_home_directory() {
+        let home = default_home();
+        assert_eq!(
+            expand_tilde(PathBuf::from("~/Documents")),
+            home.join("Documents")
+        );
+        assert_eq!(expand_tilde(PathBuf::from("~")), home);
+    }
+
+    #[test]
+    fn expand_tilde_keeps_absolute_paths() {
+        let path = PathBuf::from("/var/tmp/profile.rmm");
+        assert_eq!(expand_tilde(path.clone()), path);
+    }
 }
