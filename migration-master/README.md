@@ -13,10 +13,13 @@
 - **Создание зашифрованного архива** профиля пользователя
 - **Прямая миграция по SSH** между компьютерами
 - **Восстановление из архива** с выбором компонентов
-- **Перенос настроек приложений** (Firefox, LibreOffice, VS Code и др.)
-- **Перенос SSH-ключей** с соблюдением безопасности
-- **Перенос принтеров** CUPS
-- **Экспорт списка пакетов** RPM
+- **Перенос файлов и настроек** из `~/.config` и `~/.local/share`; Firefox,
+  Thunderbird, Git и shell-конфиги требуют отдельного архива (см. HOST_IMAGE.md)
+- **Перенос SSH-ключей** с соблюдением безопасности (публичные ключи; приватные
+  и `authorized_keys` — пока вручную)
+- **Список принтеров CUPS** и пользовательский `~/.cups`; авто-восстановление
+  принтеров пока не реализовано
+- **Список пакетов RPM** через `list-packages` (установка вручную)
 - **Проверка контрольных сумм** файлов
 - **Журналирование операций** в SQLite
 
@@ -30,19 +33,22 @@
   не делает резервных копий);
 - частичный `config.toml` допустим: недостающие поля берутся из значений
   по умолчанию, битый TOML по-прежнему возвращает ошибку;
-- SSH-политика ключей, разрешение конфликтов, отмена операций (Ctrl+C), SQLite-история,
-  отчёты (JSON/HTML/TXT/PDF), резервные копии;
+- SSH-политика ключей, стратегии конфликтов (интерактивный `ask` пока не
+  реализован), отмена операций (Ctrl+C), SQLite-история, отчёты
+  (JSON/HTML/TXT/PDF), резервные копии в GUI;
 - CLI: `scan`, `create`, `inspect`, `verify`, `restore`, `migrate-ssh`, `report`,
   `list-packages`, `list-printers`, `config`, `app-rules`;
-- GUI-мастер GTK4/libadwaita (`migration-master gui`, фича `gui`): главный экран,
+- GUI на GTK4/libadwaita (`migration-master gui`, фича `gui`): главный экран,
   создание архива, перенос по SSH, восстановление, история и диагностика.
 
-Проверяется на целевой РЕД ОС и дорабатывается:
+В работе:
 
-- детализация страниц мастера (пошаговый выбор исключений и параметров, интерактивное
-  разрешение конфликтов, предварительный просмотр плана);
-- привилегированные операции через polkit-помощник, вызываемые из GUI;
-- сборка RPM (сборка выполняется на РЕД ОС, `rpmbuild -ba`).
+- добавление путей app rules в скан (Firefox/Thunderbird/Git/shell);
+- пакеты, принтеры, системные настройки и cron (сейчас компоненты-заготовки);
+- интерактивное разрешение конфликтов и экран предпросмотра;
+- вызов polkit-помощника из GUI для системных операций.
+
+Подробный разбор — в [IMPROVEMENTS.md](docs/IMPROVEMENTS.md).
 
 ## Документация
 
@@ -50,6 +56,8 @@
 |---|---|
 | [Установка](docs/INSTALL.md) | RPM и сборка из исходников, внешние утилиты |
 | [Руководство пользователя](docs/USER_GUIDE_RU.md) | оба режима миграции, компоненты, конфликты |
+| [Образ хоста без root](docs/HOST_IMAGE.md) | снимок профиля, дополнения, полный образ диска |
+| [План улучшений](docs/IMPROVEMENTS.md) | ограничения 0.1.5 и приоритеты |
 | [Безопасность](docs/SECURITY.md) | модель угроз, шифрование, path traversal, polkit |
 | [Резервное копирование](docs/BACKUP.md) | создание, проверка и откат копий |
 | [Восстановление после ошибки](docs/RECOVERY.md) | откат и разбор сбоев |
@@ -69,8 +77,13 @@
 - РЕД ОС Linux (x86_64)
 - Rust 1.75+
 - GTK4 ≥ 4.0 и libadwaita ≥ 1.0 (для GUI; на РЕД ОС 8 — `gtk4` и `libadwaita`)
-- OpenSSH клиент
-- CUPS (для работы с принтерами)
+- OpenSSH клиент (`ssh`, `scp`)
+- CUPS (`lpstat`) — необязательно, только для списка принтеров
+- `rsync` — необязательно, ускоряет SSH-передачу
+- `tar`, `zstd`, `gpg` — необязательно, для ручных дополнительных архивов
+
+Сами `.rmm` создаются Rust-библиотеками; внешние `tar`/`zstd` для работы
+программы не требуются.
 
 ## Сборка
 
@@ -81,7 +94,7 @@
 sudo dnf install rust cargo gtk4-devel libadwaita-devel sqlite-devel
 
 # Дополнительные зависимости
-sudo dnf install openssh-clients cups-devel
+sudo dnf install openssh-clients
 ```
 
 ### Сборка проекта
@@ -158,7 +171,7 @@ migration-master scan --home /home/user --components all
 
 # Создание архива профиля
 migration-master create --output profile.rmm
-migration-master create --output profile.rmm --passphrase
+migration-master create --output profile.rmm --passphrase '...'
 migration-master create --output profile.rmm --components documents,ssh_keys
 
 # Просмотр содержимого без восстановления
@@ -170,7 +183,7 @@ migration-master verify profile.rmm
 # Восстановление из архива
 migration-master restore profile.rmm --target ./restore-test --dry-run
 migration-master restore profile.rmm --target ./restore-test --components documents,ssh_keys
-migration-master restore profile.rmm --target ./restore-test --strategy replace
+migration-master restore profile.rmm --target ./restore-test --strategy rename
 
 # Список пакетов и принтеров
 migration-master list-packages
@@ -252,28 +265,47 @@ migration-master/
 
 ## Формат архива
 
-Архивы имеют расширение `.rmm` и содержат:
+Архивы имеют расширение `.rmm`. Это zstd-сжатый tar, при наличии пароля
+целиком зашифрованный age:
 
-- `manifest.json` - метаданные архива
-- `data.zst` - сжатые данные
-- `checksum.sha256` - контрольная сумма
+- `manifest.json` — первая запись tar: метаданные, список файлов и их SHA-256;
+- файлы профиля с относительными путями;
+- отдельного `data.zst` и `checksum.sha256` внутри нет: сжатие и шифрование
+  применяются ко всему tar-потоку, хеши лежат в манифесте.
 
 ### Структура manifest.json
 
 ```json
 {
-  "version": 1,
-  "created_at": "2024-01-15T10:30:00Z",
+  "format_version": 1,
+  "created_at": "2026-11-06T10:30:00Z",
   "source_hostname": "old-pc",
-  "username": "user",
-  "uid": 1000,
-  "gid": 1000,
-  "os_info": "RED OS 7.3",
-  "app_version": "0.1.0",
-  "encrypted": true,
+  "source_user": "user",
+  "source_uid": 1000,
+  "source_gid": 1000,
+  "app_version": "0.1.5",
+  "os_info": {
+    "name": "РЕД ОС",
+    "version": "8.0",
+    "architecture": "x86_64"
+  },
   "components": ["documents", "ssh_keys", "app_configs"],
-  "files_count": 1234,
-  "total_size": 5678901234
+  "files": [
+    {
+      "relative_path": "Documents/report.txt",
+      "size": 1234,
+      "hash": "sha256:...",
+      "mode": 420,
+      "uid": 1000,
+      "gid": 1000,
+      "is_symlink": false,
+      "component": "documents"
+    }
+  ],
+  "total_size": 1234,
+  "total_files": 1,
+  "encrypted": true,
+  "compression": "zstd"
 }
 ```
 
@@ -281,9 +313,14 @@ migration-master/
 
 - **Шифрование**: age с passphrase
 - **Хеширование**: SHA-256 для проверки целостности
-- **SSH**: проверка host key, поддержка ключей Ed25519
+- **SSH**: host key проверяется вручную (используется `accept-new` — TOFU),
+  поддерживаются ключи Ed25519
 - **Path traversal защита**: проверка путей при восстановлении
-- **Polkit**: привилегированные операции через polkit
+- **Polkit**: заготовка привилегированного помощника с белым списком;
+  в 0.1.5 не вызывается из GUI
+
+Подробнее — [SECURITY.md](docs/SECURITY.md) и
+[IMPROVEMENTS.md](docs/IMPROVEMENTS.md).
 
 ## Лицензия
 

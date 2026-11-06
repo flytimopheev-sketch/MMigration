@@ -58,7 +58,7 @@ rpm -qR migration-master | grep -E 'gtk|adwaita'
 
 ```bash
 sudo dnf install rust cargo gcc make pkgconf-pkg-config \
-                 gtk4-devel libadwaita-devel sqlite-devel cups-devel \
+                 gtk4-devel libadwaita-devel sqlite-devel \
                  openssh-clients
 ```
 
@@ -96,12 +96,16 @@ migration-master gui
 
 | Инструмент | Обязателен | Назначение |
 |---|---|---|
-| `ssh` (OpenSSH) | да | прямая миграция по SSH |
-| `tar`, `zstd` | да | упаковка и сжатие архивов |
-| `rsync` | нет | ускоренная передача (иначе tar через SSH) |
-| `age` / `gpg` | нет | внешние утилиты (шифрование age встроено в бинарник) |
-| `lpstat`, CUPS | нет | перенос принтеров |
-| `pkexec` (polkit) | нет | привилегированные операции |
+| `ssh`, `scp` (OpenSSH) | да (только для SSH-режима) | прямая миграция по SSH |
+| `rsync` | нет | ускоренная передача; иначе используется `scp` |
+| `lpstat`, CUPS | нет | список принтеров; авто-восстановление не реализовано |
+| `pkexec` (polkit) | нет | будущие привилегированные операции (в 0.1.5 не вызывается) |
+| `tar`, `zstd`, `gpg`, `age` | нет | ручные дополнительные архивы, не нужны самой программе |
+
+Архивы `.rmm` создаются Rust-библиотеками (`tar`, `zstd`, `age`), поэтому
+внешние `tar` и `zstd` для работы Migration Master не требуются. `age`
+встроен в бинарник; внешний `age`/`gpg` нужен только для отдельных архивов
+вроде Firefox/Thunderbird (см. [HOST_IMAGE.md](HOST_IMAGE.md)).
 
 Проверить наличие можно командой `migration-master` → «Настройки и диагностика»
 в GUI или `migration-master scan`.

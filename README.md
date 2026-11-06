@@ -42,19 +42,22 @@
 
 ## Возможности
 
-- 🔐 **Зашифрованные архивы `.rmm`** — формат `manifest.json` + `data.zst` +
-  `checksum.sha256`, шифрование [age](https://age-encryption.org/) по паролю,
+- 🔐 **Зашифрованные архивы `.rmm`** — zstd-tar с `manifest.json` первой
+  записью, шифрование [age](https://age-encryption.org/) по паролю,
   проверка целостности SHA-256
-- 🔗 **Прямая миграция по SSH** — `rsync`/`tar` по SSH, проверка host key,
-  возобновление и отмена (Ctrl+C)
-- 📦 **Компоненты переноса** — документы, загрузки, фото, видео, музыка, шаблоны
-  рабочего стола, настройки приложений, SSH-ключи, системные настройки
-- 🖨 **Перенос принтеров** — интеграция с CUPS, полные URI (`ipp://`, `lpd://`, `smb://`)
-- 📋 **Экспорт списка пакетов** — список установленных RPM переносится как
-  перечень (файлы пакетов не копируются), на целевой машине пакеты ставятся
-  из репозиториев
+- 🔗 **Прямая миграция по SSH** — `scp` (или `rsync`, если установлен) по SSH,
+  проверка host key вручную, отмена по Ctrl+C
+- 📦 **Компоненты переноса** — документы, загрузки, фото, видео, музыка,
+  шаблоны, настройки приложений, SSH-ключи. Пакеты и системные настройки
+  автоматически не переносятся; принтеры — только `~/.cups`. См.
+  [ограничения](migration-master/docs/IMPROVEMENTS.md)
+- 🖨 **Принтеры CUPS** — список через `lpstat` и пользовательский `~/.cups`;
+  автоматическое восстановление принтеров пока не реализовано
+- 📋 **Список пакетов** — `migration-master list-packages`; в архив список не
+  попадает, установка выполняется вручную или через будущий helper
 - 🛡 **Безопасность** — защита от path traversal, атомарная запись файлов,
-  белый список привилегированных операций через PolicyKit
+  заготовка привилегированного помощника с белым списком (PolicyKit; в 0.1.5
+  не вызывается из GUI)
 - 🗂 **История и отчёты** — журнал операций в SQLite, отчёты в JSON/HTML/TXT
 - 🖥 **Графический мастер** — GTK4 + libadwaita: главный экран, создание
   архива, перенос по SSH, восстановление, история и диагностика
@@ -92,7 +95,7 @@ libadwaita ≥ 1.0, поэтому работает на РЕД ОС 8.
 
 ```bash
 sudo dnf install rust cargo gcc make pkgconf-pkg-config \
-                 gtk4-devel libadwaita-devel sqlite-devel cups-devel openssh-clients
+                 gtk4-devel libadwaita-devel sqlite-devel openssh-clients
 
 cd migration-master
 cargo build --release --features gui   # CLI + GUI
@@ -104,9 +107,9 @@ cargo test  --release                  # юнит-тесты
 
 ```bash
 migration-master scan --quick                 # что есть в профиле и каких утилит не хватает
-migration-master create --output profile.rmm --passphrase
+migration-master create --output profile.rmm --passphrase '...'
 migration-master verify profile.rmm --passphrase '...'
-migration-master restore profile.rmm --target /home/user --strategy replace
+migration-master restore profile.rmm --target /home/user --strategy rename
 migration-master migrate-ssh user@192.168.1.10 --dry-run
 migration-master report --format html
 ```
@@ -132,10 +135,13 @@ flowchart LR
 
 ```
 profile.rmm
-├── manifest.json      # метаданные: компоненты, файлы, размеры
-├── data.zst           # сжатые данные (опционально зашифрованные age)
-└── checksum.sha256    # контрольная сумма для проверки целостности
+└── zstd-tar (при наличии пароля целиком зашифрован age)
+    ├── manifest.json   # метаданные: компоненты, файлы, размеры, SHA-256
+    └── файлы профиля с относительными путями
 ```
+
+Отдельных `data.zst` и `checksum.sha256` внутри формата нет: сжатие и
+шифрование применяются ко всему tar-потоку, а хеши хранятся в манифесте.
 
 ## Требования
 
@@ -145,12 +151,14 @@ profile.rmm
 | Rust | 1.75+ | сборка из исходников |
 | GTK4 | ≥ 4.0 | графический мастер |
 | libadwaita | ≥ 1.0 | графический мастер |
-| OpenSSH (`ssh`) | — | прямая миграция по SSH |
-| `tar`, `zstd` | — | упаковка и сжатие архивов |
-| CUPS (`lpstat`) | — | перенос принтеров |
-| `pkexec` + polkit | — | привилегированные операции |
+| OpenSSH (`ssh`, `scp`) | — | прямая миграция по SSH |
+| `rsync` | — | необязательно: быстрее SSH-передача |
+| CUPS (`lpstat`) | — | необязательно: список принтеров |
+| `pkexec` + polkit | — | необязательно: будущие привилегированные операции |
+| `tar`, `zstd`, `gpg` | — | необязательно: ручные дополнительные архивы |
 
-Подробный список внешних инструментов — в
+Сами `.rmm` создаются Rust-библиотеками (`tar`, `zstd`, `age`), внешние
+`tar`/`zstd` для работы программы не нужны. Подробный список — в
 [INSTALL.md](migration-master/docs/INSTALL.md).
 
 ## Документация
@@ -159,6 +167,8 @@ profile.rmm
 |---|---|
 | [Установка](migration-master/docs/INSTALL.md) | RPM и сборка из исходников, внешние утилиты |
 | [Руководство пользователя](migration-master/docs/USER_GUIDE_RU.md) | оба режима миграции, компоненты, конфликты |
+| [Образ хоста без root](migration-master/docs/HOST_IMAGE.md) | снимок профиля, ручные дополнения, полный образ диска |
+| [План улучшений](migration-master/docs/IMPROVEMENTS.md) | найденные ограничения и приоритеты следующего релиза |
 | [Сборка RPM](migration-master/docs/BUILD_RPM.md) | `rpmbuild`, `%check`, варианты сборки, проверка пакета |
 | [Устранение неполадок](migration-master/docs/TROUBLESHOOTING.md) | типовые ошибки, диагностика GUI и CLI |
 | [Безопасность](migration-master/docs/SECURITY.md) | модель угроз, шифрование, path traversal, polkit |
@@ -185,11 +195,13 @@ cargo test --all-features
 
 Готово и покрыто тестами: ядро архивов (создание/просмотр/проверка/восстановление),
 шифрование age, защита от path traversal, атомарная запись, режим `dry-run`,
-перенос по SSH, разрешение конфликтов, отмена операций, история в SQLite,
-отчёты, графический мастер.
+перенос по SSH (scp/rsync), группы файловых компонентов, история в SQLite,
+отчёты, графический мастер и резервное копирование в GUI.
 
-Развивается: пошаговый мастер с предварительным просмотром плана, интерактивное
-разрешение конфликтов, расширенные правила переноса приложений.
+Развивается: интерактивное разрешение конфликтов (сейчас `ask` пропускает
+файлы), перенос Firefox/Thunderbird/Git/shell-настроек, пакеты, принтеры,
+системные настройки и cron, экран предпросмотра. Подробности и приоритеты —
+в [IMPROVEMENTS.md](migration-master/docs/IMPROVEMENTS.md).
 
 ## Лицензия
 

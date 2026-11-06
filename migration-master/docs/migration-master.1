@@ -1,4 +1,4 @@
-.TH MIGRATION-MASTER 1 "2024-01-15" "Migration Master 0.1.0" "Команды пользователя"
+.TH MIGRATION-MASTER 1 "2026-11-06" "Migration Master 0.1.5" "Команды пользователя"
 
 .SH ИМЯ
 migration-master \- Мастер миграции пользователя для РЕД ОС Linux
@@ -19,7 +19,9 @@ Migration Master - это приложение для безопасного п�
 .br
 \fB--json\fR          Вывод в формате JSON
 .br
-\fB-c, --components\fR Компоненты для сканирования (через запятую)
+\fB--components\fR Компоненты для сканирования (через запятую)
+.br
+\fB--home\fR           Домашний каталог
 .br
 \fB--quick\fR          Быстрая оценка без детального сканирования
 .RE
@@ -37,7 +39,7 @@ Migration Master - это приложение для безопасного п�
 .br
 \fB\-\-passphrase\fR     Пароль шифрования (не сохраняется)
 .br
-\fB\-c, \-\-compression\fR Уровень сжатия zstd, 0–22 [по умолчанию 3]
+\fB\-\-compression\fR Уровень сжатия zstd, 0–22 [по умолчанию 3]
 .br
 \fB\-\-dry\-run\fR        Оценка без создания файла
 .RE
@@ -62,7 +64,8 @@ Migration Master - это приложение для безопасного п�
 \fB\-\-passphrase\fR     Пароль для расшифрования
 .br
 \fB\-\-strategy\fR       Стратегия конфликтов:
-skip|replace|newer|keep\-both|rename\-old|ask [по умолчанию ask]
+skip|replace|newer|keep\-both|rename\-old|ask [по умолчанию ask].
+ask в 0.1.5 без интерактивного обработчика работает как skip.
 .br
 \fB\-\-verify\fR         Проверять хеши после восстановления [по умолчанию true]
 .br
@@ -80,20 +83,6 @@ skip|replace|newer|keep\-both|rename\-old|ask [по умолчанию ask]
 .RE
 
 .TP
-.B scan
-Сканирование профиля и оценка состава
-.RS
-.br
-\fB\-\-home\fR           Домашний каталог
-.br
-\fB\-\-components\fR     Компоненты (default, all или список ключей) [по умолчанию default]
-.br
-\fB\-\-quick\fR          Быстрая оценка без детального разбора
-.br
-\fB\-\-json\fR           Вывод в формате JSON
-.RE
-
-.TP
 .B migrate\-ssh \fIАДРЕС\fR
 Прямая миграция по SSH. \fIАДРЕС\fR вида [user@]host[:port]
 .RS
@@ -106,7 +95,7 @@ skip|replace|newer|keep\-both|rename\-old|ask [по умолчанию ask]
 .br
 \fB\-\-components\fR     Компоненты [по умолчанию default]
 .br
-\fB\-i, \-\-identity\fR  Файл приватного ключа SSH
+\fB\-\-identity\fR  Файл приватного ключа SSH
 .br
 \fB\-\-dry\-run\fR       Проверка соединения и плана без передачи
 .RE
@@ -134,7 +123,7 @@ skip|replace|newer|keep\-both|rename\-old|ask [по умолчанию ask]
 .br
 \fB\-o, \-\-output\fR     Каталог для файла отчёта
 .br
-\fB\-f, \-\-format\fR     Формат: json|html|txt [по умолчанию txt]
+\fB\-\-format\fR     Формат: json|html|txt [по умолчанию txt]
 .br
 \fB\-\-limit\fR          Сколько последних операций включить [по умолчанию 20]
 .RE
@@ -191,7 +180,7 @@ migration-master verify backup.rmm --passphrase 'секрет'
 
 # Восстановление из архива (сначала обязательно --dry-run)
 migration-master restore backup.rmm --target /home/user --dry-run --passphrase 'секрет'
-migration-master restore backup.rmm --target /home/user --strategy replace --passphrase 'секрет'
+migration-master restore backup.rmm --target /home/user --strategy rename --passphrase 'секрет'
 
 # Прямая миграция по SSH
 migration-master migrate-ssh user@192.168.1.100 --dry-run
@@ -209,11 +198,22 @@ migration-master gui
 
 .SH БЕЗОПАСНОСТЬ
 Приложение использует age для шифрования архивов и SHA-256 для проверки целостности.
-Пароль архива нигде не сохраняется и не попадает в журналы, историю и отчёты.
-Приватные SSH-ключи никогда не копируются без явного согласия пользователя.
+Пароль архива нигде не сохраняется и не попадает в журналы, историю и отчёты,
+но в CLI он виден в списке процессов и остаётся в истории оболочки.
+Приватные SSH-ключи и authorized_keys в 0.1.5 не переносятся: переключателя
+в CLI/GUI нет, их копируют вручную и выставляют права 0600.
 Все пути из архива проверяются на выход за пределы целевого каталога
-(path traversal). Привилегированные операции выполняет отдельный помощник
-migration-master-helper по белому списку через PolicyKit.
+(path traversal). Помощник migration-master-helper с белым списком PolicyKit
+предусмотрен, но в 0.1.5 из GUI/CLI не вызывается.
+
+.SH ОГРАНИЧЕНИЯ
+Стратегия ask в 0.1.5 фактически работает как skip: интерактивного диалога нет.
+Компоненты packages, printers, system_settings и cron_jobs — заготовки;
+Firefox, Thunderbird, Git и shell-конфиги автоматически не переносятся.
+CLI restore не создаёт автоматическую резервную копию (это делает GUI-мастер).
+Архив не заменяет полный образ диска: /etc, пакеты, другие пользователи и
+загрузчик требуют root и других инструментов. Подробнее — HOST_IMAGE.md и
+IMPROVEMENTS.md в каталоге документации.
 
 .SH ФАЙЛЫ
 .I ~/.config/migration-master/config.toml

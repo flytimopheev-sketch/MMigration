@@ -34,9 +34,16 @@
 
 ### 6. User Interface (Интерфейс)
 - `cli` - Интерфейс командной строки
-- `wizard` - Пошаговый мастер миграции
+- `wizard` - Оркестратор миграции (не путать с пошаговым GUI)
 - `ui` - Графический интерфейс GTK4/libadwaita
 - `report` - Генерация отчётов
+
+> **Статус 0.1.5.** `applications`, `printers`, `packages`,
+> `system_settings` и `polkit` реализованы частично: модули и структуры есть,
+> но не все вызовы подключены к основному потоку. Правила приложений сейчас
+> влияют на размеры/исключения, но не добавляют свои пути в скан. Пакеты,
+> принтеры, системные настройки и cron не архивируются автоматически.
+> Подробный список — в [IMPROVEMENTS.md](IMPROVEMENTS.md).
 
 ## Поток данных
 
@@ -84,39 +91,54 @@
 - Проверка canonical paths
 
 ### Polkit
-- Привилегированные операции выполняются через polkit
-- Минимальные необходимые права
-- Журналирование всех привилегированных действий
+- Для привилегированных операций предусмотрен helper с белым списком
+- В 0.1.5 helper не вызывается из GUI/CLI; интеграция запланирована
+- Минимальные необходимые права и журналирование — в будущих вызовах
 
 ## Формат архива
 
 ```
-profile.rmm/
-├── manifest.json       # Метаданные
-├── checksum.sha256     # Контрольная сумма манифеста
-├── data.zst.age        # Зашифрованные сжатые данные
-└── signatures/         # Подписи (опционально)
-    └── manifest.sig
+profile.rmm
+└── zstd-tar (если задан пароль — целиком зашифрован age)
+    ├── manifest.json       # Первая запись: метаданные и хеши файлов
+    └── файлы профиля       # Относительные пути внутри $HOME
 ```
+
+Отдельных `data.zst`, `checksum.sha256` и каталога `signatures/` в формате
+0.1.5 нет. `manifest.json` содержит `manifest_hash`; `verify` сверяет его и
+SHA-256 каждого файла.
 
 ### manifest.json структура
 
 ```json
 {
-  "version": 1,
-  "format": "rmm",
-  "created_at": "2024-01-15T10:30:00Z",
-  "source": {
-    "hostname": "old-pc",
-    "username": "user",
-    "uid": 1000,
-    "gid": 1000,
-    "os": "RED OS 7.3",
-    "app_version": "0.1.0"
+  "format_version": 1,
+  "created_at": "2026-11-06T10:30:00Z",
+  "source_hostname": "old-pc",
+  "source_user": "user",
+  "source_uid": 1000,
+  "source_gid": 1000,
+  "app_version": "0.1.5",
+  "os_info": {
+    "name": "РЕД ОС",
+    "version": "8.0",
+    "architecture": "x86_64"
   },
   "components": ["documents", "ssh_keys", "app_configs"],
-  "files": [...],
-  "total_size": 5678901234,
+  "files": [
+    {
+      "relative_path": "Documents/report.txt",
+      "size": 1234,
+      "hash": "sha256:...",
+      "mode": 420,
+      "uid": 1000,
+      "gid": 1000,
+      "is_symlink": false,
+      "component": "documents"
+    }
+  ],
+  "total_size": 1234,
+  "total_files": 1,
   "encrypted": true,
   "compression": "zstd"
 }

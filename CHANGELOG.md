@@ -3,6 +3,21 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Не выпущено]
+
+### Документация
+
+- Добавлено руководство [«Образ хоста без root»](migration-master/docs/HOST_IMAGE.md):
+  снимок пользовательского профиля, ручной перенос Firefox/Thunderbird/Git/GPG,
+  пакеты, принтеры, dconf и полный образ диска с root.
+- Добавлен [план улучшений](migration-master/docs/IMPROVEMENTS.md) по итогам
+  проверки 0.1.5: стратегия `ask`, нереализованные компоненты, приватные ключи,
+  backup в CLI, app rules и тесты.
+- Исправлены примеры `--passphrase` без значения, описание формата `.rmm`,
+  состав компонентов, внешние зависимости и статус PolicyKit в README,
+  USER_GUIDE, INSTALL, SECURITY, BACKUP, TROUBLESHOOTING и man-странице.
+- Man-страница обновлена до 0.1.5, исправлены несуществующие короткие опции.
+
 ## [0.1.5] — 2026-10-26
 
 ### Исправлено
