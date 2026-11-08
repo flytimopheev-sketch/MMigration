@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::error::{MigrationError, Result};
+use crate::error::Result;
 
 /// Описание принтера.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -22,6 +22,19 @@ pub struct PrinterEntry {
     /// Принтер по умолчанию
     #[serde(default)]
     pub default: bool,
+}
+
+impl PrinterEntry {
+    /// Строка для безопасной передачи привилегированному помощнику.
+    pub fn helper_spec(&self) -> String {
+        format!(
+            "{}\t{}\t{}\t{}",
+            self.name,
+            self.device_uri,
+            self.model,
+            if self.default { "1" } else { "0" }
+        )
+    }
 }
 
 /// Работа с принтерами системы.
@@ -54,17 +67,6 @@ impl PrinterManager {
             &String::from_utf8_lossy(&printers.stdout),
             &String::from_utf8_lossy(&devices.stdout),
         ))
-    }
-
-    /// Строка для безопасной передачи привилегированному помощнику.
-    pub fn helper_spec(&self) -> String {
-        format!(
-            "{}\t{}\t{}\t{}",
-            self.name,
-            self.device_uri,
-            self.model,
-            if self.default { "1" } else { "0" }
-        )
     }
 
     /// Пути файлов конфигурации CUPS в профиле/системе.

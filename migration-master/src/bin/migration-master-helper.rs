@@ -84,7 +84,7 @@ fn run(command: HelperCommand) -> Result<(), String> {
             };
 
             command.args(&packages);
-            exec(command)
+            exec(&mut command)
         }
         HelperCommand::InstallPolicy { path } => {
             if !path.is_file() {
@@ -95,7 +95,7 @@ fn run(command: HelperCommand) -> Result<(), String> {
             command.args(["-m", "644"]);
             command.arg(&path);
             command.arg(target);
-            exec(command)
+            exec(&mut command)
         }
         HelperCommand::CopySystem {
             source,
@@ -164,7 +164,7 @@ fn configure_printer(spec: &str) -> Result<(), String> {
     if !model.is_empty() {
         command.args(["-m", model]);
     }
-    exec(command)?;
+    exec(&mut command)?;
 
     exec(Command::new("cupsenable").arg(name))?;
     exec(Command::new("cupsaccept").arg(name))?;
@@ -174,7 +174,7 @@ fn configure_printer(spec: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn exec(mut command: Command) -> Result<(), String> {
+fn exec(command: &mut Command) -> Result<(), String> {
     command.stdin(Stdio::null());
     let status = command
         .status()

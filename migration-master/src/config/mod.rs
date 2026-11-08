@@ -120,7 +120,7 @@ pub struct MigrationProfile {
 }
 
 /// Типы компонентов для переноса
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentType {
     /// Рабочий стол

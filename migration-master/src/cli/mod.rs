@@ -607,7 +607,6 @@ impl Cli {
                 wizard_config.auto_backup = !no_backup;
                 wizard_config.cancel = Some(crate::cancel::global());
                 if let Ok(current) = config::load_config() {
-                    wizard_config.report_dir = Some(current.report_dir);
                     wizard_config.database_path = Some(current.database_path);
                 }
 
@@ -722,7 +721,8 @@ impl Cli {
 
                 // То же сканирование, что и при создании архива: правила
                 // приложений, XDG-каталоги и метаданные не расходятся.
-                let mut wizard_config = WizardConfig::new(MigrationMode::LocalArchive, source_home);
+                let mut wizard_config =
+                    WizardConfig::new(MigrationMode::LocalArchive, &source_home);
                 wizard_config.components = components;
                 wizard_config.app_rules = crate::applications::load_effective_rules();
                 wizard_config.cancel = Some(crate::cancel::global());
@@ -789,11 +789,11 @@ impl Cli {
                     );
 
                     let mut by_component = inventory.by_component.clone();
-                    by_component.sort_by(|a, b| a.0.cmp(&b.0));
+                    by_component.sort_by_key(|component| component.0);
                     for (component, count, bytes) in by_component {
                         println!(
                             "  {}: {} файлов, {}",
-                            component,
+                            component.description(),
                             count,
                             human_bytes::human_bytes(bytes as f64)
                         );
