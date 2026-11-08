@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
-use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
+use crate::archive::ArchiveManager;
 use crate::config::{self, ComponentType, MigrationMode};
 use crate::conflict_resolver::ConflictStrategy;
 use crate::database::DatabaseManager;
@@ -30,6 +30,93 @@ pub struct Cli {
     pub command: Commands,
 }
 
+/// Общие параметры парольной фразы архива.
+#[derive(Debug, Clone, Args)]
+pub struct PassphraseArgs {
+    /// Пароль шифрования (не рекомендуется: виден в списке процессов)
+    #[arg(long)]
+    pub passphrase: Option<String>,
+    /// Файл с парольной фразой (первая строка; безопаснее аргумента)
+    #[arg(long = "passphrase-file")]
+    pub passphrase_file: Option<PathBuf>,
+    /// Запросить парольную фразу интерактивно (без эха)
+    #[arg(long = "ask-passphrase")]
+    pub ask_passphrase: bool,
+}
+
+impl PassphraseArgs {
+    /// Получить пароль с учётом файла/интерактивного ввода.
+    ///
+    /// `confirm` запрашивает подтверждение (для создания нового архива).
+    fn resolve(&self, confirm: bool) -> Result<Option<String>> {
+        let sources = [
+            self.passphrase.is_some(),
+            self.passphrase_file.is_some(),
+            self.ask_passphrase,
+        ]
+        .into_iter()
+        .filter(|value| *value)
+        .count();
+        if sources > 1 {
+            return Err(MigrationError::InvalidInput(
+                "укажите только один способ пароля: --passphrase, --passphrase-file \
+                 или --ask-passphrase"
+                    .to_string(),
+            ));
+        }
+
+        if let Some(passphrase) = &self.passphrase {
+            if passphrase.is_empty() {
+                return Err(MigrationError::InvalidInput(
+                    "парольная фраза не может быть пустой".to_string(),
+                ));
+            }
+            eprintln!(
+                "предупреждение: --passphrase виден в списке процессов; \
+                 используйте --passphrase-file или --ask-passphrase"
+            );
+            return Ok(Some(passphrase.clone()));
+        }
+
+        if let Some(path) = &self.passphrase_file {
+            let content = std::fs::read_to_string(path).map_err(|error| {
+                MigrationError::Io(std::io::Error::new(
+                    error.kind(),
+                    format!("не удалось прочитать {}: {}", path.display(), error),
+                ))
+            })?;
+            let passphrase = content.trim_end_matches(['\r', '\n']).to_string();
+            if passphrase.is_empty() {
+                return Err(MigrationError::InvalidInput(format!(
+                    "файл {} пуст",
+                    path.display()
+                )));
+            }
+            return Ok(Some(passphrase));
+        }
+
+        if self.ask_passphrase {
+            let first = rpassword::prompt_password("Парольная фраза архива: ")?;
+            if first.is_empty() {
+                return Err(MigrationError::InvalidInput(
+                    "парольная фраза не может быть пустой".to_string(),
+                ));
+            }
+            if confirm {
+                let second = rpassword::prompt_password("Повторите парольную фразу: ")?;
+                if first != second {
+                    return Err(MigrationError::InvalidInput(
+                        "парольные фразы не совпадают".to_string(),
+                    ));
+                }
+            }
+            return Ok(Some(first));
+        }
+
+        Ok(None)
+    }
+}
+
 /// Команды.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
@@ -37,9 +124,8 @@ pub enum Commands {
     Inspect {
         /// Путь к архиву
         archive: PathBuf,
-        /// Пароль шифрования
-        #[arg(long)]
-        passphrase: Option<String>,
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
     },
     /// Создать архив из пользовательского профиля
     Create {
@@ -52,12 +138,17 @@ pub enum Commands {
         /// Домашний каталог-источник
         #[arg(long)]
         home: Option<PathBuf>,
-        /// Пароль шифрования
-        #[arg(long)]
-        passphrase: Option<String>,
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
         /// Уровень сжатия (0-22)
         #[arg(long, default_value_t = 3)]
         compression: i32,
+        /// Перенести приватные SSH-ключи (явное согласие)
+        #[arg(long)]
+        include_private_ssh_keys: bool,
+        /// Перенести authorized_keys (явное согласие)
+        #[arg(long)]
+        include_authorized_keys: bool,
         /// Только оценить, без записи
         #[arg(long)]
         dry_run: bool,
@@ -72,15 +163,26 @@ pub enum Commands {
         /// Компоненты через запятую
         #[arg(long, default_value = "all")]
         components: String,
-        /// Пароль шифрования
-        #[arg(long)]
-        passphrase: Option<String>,
-        /// Стратегия конфликтов: skip|replace|newer|keep-both|rename-old|ask
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
+        /// Стратегия конфликтов: skip|replace|newer|keep-both|rename|ask
         #[arg(long, default_value = "ask")]
         strategy: String,
         /// Проверять хеши после восстановления
         #[arg(long, default_value_t = true)]
         verify: bool,
+        /// Установить пользовательские пакеты из архива (через polkit)
+        #[arg(long)]
+        install_packages: bool,
+        /// Настроить принтеры из архива (через polkit)
+        #[arg(long)]
+        configure_printers: bool,
+        /// Применить dconf и crontab из архива
+        #[arg(long)]
+        apply_system_settings: bool,
+        /// Не создавать резервную копию перед восстановлением
+        #[arg(long)]
+        no_backup: bool,
         /// Только оценить, без изменений
         #[arg(long)]
         dry_run: bool,
@@ -89,9 +191,8 @@ pub enum Commands {
     Verify {
         /// Путь к архиву
         archive: PathBuf,
-        /// Пароль шифрования
-        #[arg(long)]
-        passphrase: Option<String>,
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
         /// Проверять хеши всех файлов
         #[arg(long, default_value_t = true)]
         deep: bool,
@@ -113,6 +214,9 @@ pub enum Commands {
     },
     /// Показать список установленных пакетов
     ListPackages {
+        /// Показать все пакеты, включая системные (по умолчанию — userinstalled)
+        #[arg(long)]
+        all: bool,
         /// Вывести результат в формате JSON
         #[arg(long)]
         json: bool,
@@ -142,6 +246,15 @@ pub enum Commands {
         /// Файл приватного ключа SSH
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Файл known_hosts (для проверки отпечатка)
+        #[arg(long)]
+        known_hosts: Option<PathBuf>,
+        /// Передавать приватные SSH-ключи (явное согласие)
+        #[arg(long)]
+        include_private_ssh_keys: bool,
+        /// Передавать authorized_keys (явное согласие)
+        #[arg(long)]
+        include_authorized_keys: bool,
         /// Только проверка соединения и план (без передачи)
         #[arg(long)]
         dry_run: bool,
@@ -216,8 +329,6 @@ pub enum ConfigAction {
     /// Показать путь к файлу настроек
     Path,
 }
-
-use crate::file_transfer::TransferItem;
 
 /// Консольный индикатор прогресса.
 pub struct ConsoleProgress {
@@ -310,6 +421,7 @@ impl Cli {
                 archive,
                 passphrase,
             } => {
+                let passphrase = passphrase.resolve(false)?;
                 let info = ArchiveManager::inspect(&archive, passphrase.as_deref())?;
                 println!("Архив: {}", archive.display());
                 println!(
@@ -344,6 +456,49 @@ impl Cli {
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
+                let metadata = &info.manifest.metadata;
+                println!("Метаданные: {}", metadata.summary());
+                if !metadata.packages.is_empty() {
+                    println!(
+                        "  пакеты: {}",
+                        metadata
+                            .packages
+                            .iter()
+                            .map(|package| package.name.as_str())
+                            .take(20)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    if metadata.packages.len() > 20 {
+                        println!("  … и ещё {}", metadata.packages.len() - 20);
+                    }
+                }
+                for printer in &metadata.printers {
+                    println!(
+                        "  принтер: {} (URI: {}, по умолчанию: {})",
+                        printer.name,
+                        if printer.device_uri.is_empty() {
+                            "—"
+                        } else {
+                            printer.device_uri.as_str()
+                        },
+                        if printer.default { "да" } else { "нет" }
+                    );
+                }
+                if metadata
+                    .dconf
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .is_empty()
+                {
+                    println!("  dconf: нет");
+                } else {
+                    println!("  dconf: есть");
+                }
+                for warning in &metadata.warnings {
+                    eprintln!("  предупреждение: {}", warning);
+                }
                 for file in &info.manifest.files {
                     println!("  {} ({} байт)", file.relative_path, file.size);
                 }
@@ -355,31 +510,56 @@ impl Cli {
                 home,
                 passphrase,
                 compression,
+                include_private_ssh_keys,
+                include_authorized_keys,
                 dry_run,
             } => {
                 let components = parse_components(&components)?;
                 let source_home = home.unwrap_or_else(default_home);
-                let items = scan_items(&source_home, &components, Some(output.as_path()))?;
-                let options = CreateArchiveOptions {
-                    output,
-                    source_home,
-                    items,
-                    components,
-                    passphrase,
-                    compression_level: compression,
-                    dry_run,
-                    cancel: Some(crate::cancel::global()),
-                };
+                let passphrase = passphrase.resolve(true)?;
+
+                let mut wizard_config =
+                    WizardConfig::new(MigrationMode::LocalArchive, source_home.clone());
+                wizard_config.components = components;
+                wizard_config.archive_path = Some(output.clone());
+                wizard_config.passphrase = passphrase;
+                wizard_config.compression_level = compression;
+                wizard_config.include_private_ssh_keys = include_private_ssh_keys;
+                wizard_config.include_authorized_keys = include_authorized_keys;
+                wizard_config.app_rules = crate::applications::load_effective_rules();
+                wizard_config.dry_run = dry_run;
+                wizard_config.cancel = Some(crate::cancel::global());
+
+                // Не включать сам будущий архив, если он лежит внутри HOME.
+                if let Ok(relative) = output.strip_prefix(&source_home) {
+                    let relative = relative.to_string_lossy().replace('\\', "/");
+                    if !relative.is_empty() {
+                        wizard_config.exclusions.push(relative);
+                    }
+                }
+
                 let progress = ConsoleProgress::new();
-                let created = ArchiveManager::create(&options, &progress)?;
-                println!("Архив: {}", created.path.display());
+                let mut wizard = MigrationWizard::new(wizard_config);
+                let report = wizard.run(&progress)?;
+
+                println!("Архив: {}", output.display());
                 println!(
-                    "Файлов: {}, данных: {} байт, зашифрован: {}, {} мс",
-                    created.manifest.total_files,
-                    created.manifest.total_size,
-                    created.encrypted,
-                    created.duration_ms
+                    "Файлов: {}, данных: {} байт, статус: {}",
+                    report.stats.files_copied,
+                    report.stats.bytes_copied,
+                    report.status()
                 );
+                if !report.warnings.is_empty() {
+                    for warning in &report.warnings {
+                        eprintln!("  предупреждение: {}", warning);
+                    }
+                }
+                if !report.is_success() {
+                    return Err(MigrationError::Unknown(format!(
+                        "создание архива завершилось с ошибками: {}",
+                        report.errors.join("; ")
+                    )));
+                }
                 Ok(())
             }
             Commands::Restore {
@@ -389,46 +569,96 @@ impl Cli {
                 passphrase,
                 strategy,
                 verify,
+                install_packages,
+                configure_printers,
+                apply_system_settings,
+                no_backup,
                 dry_run,
             } => {
+                use std::io::IsTerminal;
+
                 let components = if components == "all" {
-                    None
+                    ComponentType::all_components()
                 } else {
-                    Some(parse_components(&components)?)
+                    parse_components(&components)?
                 };
-                let options = RestoreOptions {
-                    archive,
-                    passphrase,
-                    target_root: target,
-                    components,
-                    strategy: parse_strategy(&strategy)?,
-                    verify_hash: verify,
-                    dry_run,
-                    cancel: Some(crate::cancel::global()),
-                };
+                let strategy = parse_strategy(&strategy)?;
+                if strategy == ConflictStrategy::Ask && !std::io::stdin().is_terminal() {
+                    return Err(MigrationError::InvalidInput(
+                        "стратегия ask требует терминала; укажите --strategy rename, \
+                         replace, skip, keep-both или newer"
+                            .to_string(),
+                    ));
+                }
+                let passphrase = passphrase.resolve(false)?;
+
+                let mut wizard_config = WizardConfig::new(MigrationMode::Restore, default_home());
+                wizard_config.target_home = target;
+                wizard_config.components = components;
+                wizard_config.archive_path = Some(archive);
+                wizard_config.passphrase = passphrase;
+                wizard_config.conflict_strategy = strategy;
+                wizard_config.interactive_conflicts = strategy == ConflictStrategy::Ask;
+                wizard_config.verify = verify;
+                wizard_config.dry_run = dry_run;
+                wizard_config.install_packages = install_packages;
+                wizard_config.configure_printers = configure_printers;
+                wizard_config.apply_system_settings = apply_system_settings;
+                wizard_config.auto_backup = !no_backup;
+                wizard_config.cancel = Some(crate::cancel::global());
+                if let Ok(current) = config::load_config() {
+                    wizard_config.report_dir = Some(current.report_dir);
+                    wizard_config.database_path = Some(current.database_path);
+                }
+
                 let progress = ConsoleProgress::new();
-                let result = ArchiveManager::restore(&options, &progress)?;
+                let mut wizard = MigrationWizard::new(wizard_config);
+                let report = wizard.run(&progress)?;
 
                 println!(
-                    "Восстановлено: {} ({} байт); пропущено: {}; проверено хешей: {}",
-                    result.restored_files,
-                    result.restored_bytes,
-                    result.skipped_files,
-                    result.verified_files
+                    "Восстановлено: {} ({} байт); пропущено: {}; конфликтов: {}",
+                    report.stats.files_copied,
+                    report.stats.bytes_copied,
+                    report.stats.files_skipped,
+                    report.stats.conflicts_resolved
                 );
-                for conflict in &result.conflicts {
-                    println!("  конфликт: {}", conflict.describe());
+                if let Some(backup) = &report.backup_path {
+                    println!("Резервная копия: {}", backup);
                 }
-                for error in &result.errors {
+                if !report.installed_packages.is_empty() {
+                    println!(
+                        "Установлены пакеты: {}",
+                        report.installed_packages.join(", ")
+                    );
+                }
+                if !report.restored_printers.is_empty() {
+                    println!("Принтеры: {}", report.restored_printers.join(", "));
+                }
+                if !report.applied_settings.is_empty() {
+                    println!(
+                        "Системные настройки: {}",
+                        report.applied_settings.join(", ")
+                    );
+                }
+                for skipped in &report.skipped_files {
+                    eprintln!("  пропущено: {}", skipped);
+                }
+                for warning in &report.warnings {
+                    eprintln!("  предупреждение: {}", warning);
+                }
+                for error in &report.errors {
                     eprintln!("  ошибка: {}", error);
                 }
+                for recommendation in &report.recommendations {
+                    println!("  рекомендация: {}", recommendation);
+                }
 
-                if result.is_success() {
+                if report.is_success() && !report.cancelled {
                     Ok(())
                 } else {
                     Err(MigrationError::Conflict(format!(
-                        "восстановление завершено с ошибками: {}",
-                        result.errors.len()
+                        "восстановление завершилось с ошибками: {}",
+                        report.errors.len()
                     )))
                 }
             }
@@ -437,6 +667,7 @@ impl Cli {
                 passphrase,
                 deep,
             } => {
+                let passphrase = passphrase.resolve(false)?;
                 let report = ArchiveManager::verify(&archive, passphrase.as_deref(), deep)?;
                 println!(
                     "Манифест: {}",
@@ -471,11 +702,11 @@ impl Cli {
             } => {
                 let components = parse_components(&components)?;
                 let source_home = home.unwrap_or_else(default_home);
-                let scanner = ProfileScanner::new()?
-                    .with_home(source_home)
-                    .with_components(components);
 
                 if quick {
+                    let scanner = ProfileScanner::new()?
+                        .with_home(source_home)
+                        .with_components(components);
                     let (files, bytes) = scanner.quick_estimate()?;
                     if json {
                         println!("{}", serde_json::json!({ "files": files, "bytes": bytes }));
@@ -489,29 +720,77 @@ impl Cli {
                     return Ok(());
                 }
 
-                let result = scanner.scan()?;
+                // То же сканирование, что и при создании архива: правила
+                // приложений, XDG-каталоги и метаданные не расходятся.
+                let mut wizard_config = WizardConfig::new(MigrationMode::LocalArchive, source_home);
+                wizard_config.components = components;
+                wizard_config.app_rules = crate::applications::load_effective_rules();
+                wizard_config.cancel = Some(crate::cancel::global());
+                let mut wizard = MigrationWizard::new(wizard_config);
+                let inventory = wizard.scan()?.clone();
+
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
-                } else {
-                    println!("Домашний каталог: {}", result.home_dir.display());
+                    let files: Vec<_> = inventory
+                        .items
+                        .iter()
+                        .map(|item| {
+                            serde_json::json!({
+                                "source": item.source,
+                                "relative": item.relative,
+                                "size": item.size,
+                                "is_symlink": item.is_symlink,
+                            })
+                        })
+                        .collect();
+                    let by_component: Vec<_> = inventory
+                        .by_component
+                        .iter()
+                        .map(|(component, files, bytes)| {
+                            serde_json::json!({
+                                "component": component.key(),
+                                "files": files,
+                                "bytes": bytes,
+                            })
+                        })
+                        .collect();
+                    let applications: Vec<_> = inventory
+                        .applications
+                        .iter()
+                        .map(|app| {
+                            serde_json::json!({
+                                "name": app.name,
+                                "files": app.files,
+                                "bytes": app.bytes,
+                            })
+                        })
+                        .collect();
                     println!(
-                        "Пользователь: {} (uid {}, gid {})",
-                        result.username, result.uid, result.gid
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "home": source_home,
+                            "files": files,
+                            "total_files": inventory.total_files,
+                            "total_size": inventory.total_size,
+                            "by_component": by_component,
+                            "applications": applications,
+                            "metadata": inventory.metadata,
+                            "metadata_summary": inventory.metadata.summary(),
+                            "excluded": inventory.excluded,
+                            "private_keys": inventory.private_keys,
+                            "errors": inventory.errors,
+                        }))?
                     );
+                } else {
+                    println!("Домашний каталог: {}", source_home.display());
                     println!(
                         "Файлов: {}, размер: {}",
-                        result.total_files,
-                        result.total_size_human()
+                        inventory.total_files,
+                        human_bytes::human_bytes(inventory.total_size as f64)
                     );
 
-                    let mut components: Vec<_> = result.files_by_component.iter().collect();
-                    components.sort_by(|a, b| a.0.cmp(b.0));
-                    for (component, count) in components {
-                        let bytes = result
-                            .size_by_component
-                            .get(component)
-                            .copied()
-                            .unwrap_or(0);
+                    let mut by_component = inventory.by_component.clone();
+                    by_component.sort_by(|a, b| a.0.cmp(&b.0));
+                    for (component, count, bytes) in by_component {
                         println!(
                             "  {}: {} файлов, {}",
                             component,
@@ -519,23 +798,35 @@ impl Cli {
                             human_bytes::human_bytes(bytes as f64)
                         );
                     }
-                    if !result.excluded_paths.is_empty() {
-                        println!("  исключено по правилам: {}", result.excluded_paths.len());
+                    if !inventory.excluded.is_empty() {
+                        println!("  исключено по правилам: {}", inventory.excluded.len());
                     }
-                    for error in &result.errors {
+                    println!("Метаданные: {}", inventory.metadata.summary());
+                    for warning in &inventory.metadata.warnings {
+                        eprintln!("  предупреждение: {}", warning);
+                    }
+                    for error in &inventory.errors {
                         eprintln!("  ошибка: {}", error);
                     }
                 }
                 Ok(())
             }
-            Commands::ListPackages { json } => {
+            Commands::ListPackages { all, json } => {
                 let manager = PackageManager::detect();
-                let entries = manager.list_installed()?;
+                let entries = if all {
+                    manager.list_installed()?
+                } else {
+                    manager.list_user_installed()?
+                };
                 if json {
                     println!("{}", serde_json::to_string_pretty(&entries)?);
                 } else {
                     println!("Менеджер пакетов: {}", manager.list_tool());
-                    println!("Установлено пакетов: {}", entries.len());
+                    println!(
+                        "{} пакетов: {}",
+                        if all { "Всего" } else { "Userinstalled" },
+                        entries.len()
+                    );
                     for entry in entries.iter().take(50) {
                         println!("  {} {}", entry.name, entry.version);
                     }
@@ -573,11 +864,15 @@ impl Cli {
                 remote_home,
                 components,
                 identity,
+                known_hosts,
+                include_private_ssh_keys,
+                include_authorized_keys,
                 dry_run,
             } => {
                 let components = parse_components(&components)?;
                 let source_home = home.unwrap_or_else(default_home);
-                let ssh = parse_ssh_target(&target, port, identity)?;
+                let mut ssh = parse_ssh_target(&target, port, identity)?;
+                ssh.known_hosts_file = known_hosts;
 
                 println!(
                     "Подключение: {}@{}:{}",
@@ -589,7 +884,16 @@ impl Cli {
                     ssh.host,
                     ssh.port
                 );
-                println!("Проверьте отпечаток узла (host key) перед тем, как доверять хосту.");
+                match SshTransfer::new(ssh.clone()).host_fingerprint() {
+                    Ok(Some(fingerprint)) => println!(
+                        "Отпечаток узла (проверьте по доверенному каналу): {}",
+                        fingerprint
+                    ),
+                    Ok(None) => println!(
+                        "Отпечаток узла получить не удалось; проверьте host key в known_hosts"
+                    ),
+                    Err(error) => eprintln!("  отпечаток: {}", error),
+                }
 
                 let remote_home = remote_home.unwrap_or_else(|| {
                     if ssh.user.is_empty() {
@@ -611,6 +915,8 @@ impl Cli {
                 wizard_config.components = components;
                 wizard_config.app_rules = crate::applications::load_effective_rules();
                 wizard_config.ssh = Some(ssh);
+                wizard_config.include_private_ssh_keys = include_private_ssh_keys;
+                wizard_config.include_authorized_keys = include_authorized_keys;
                 wizard_config.dry_run = dry_run;
                 wizard_config.cancel = Some(crate::cancel::global());
 
@@ -775,43 +1081,6 @@ impl Cli {
                     }
                 }
             }
-        }
-    }
-}
-
-/// Собрать элементы профиля для упаковки.
-///
-/// `exclude` — путь, который не следует включать в архив: сам файл архива,
-/// если он лежит внутри сканируемого каталога (иначе прошлый архив попадает
-/// в новый и размер растёт от запуска к запуску).
-fn scan_items(
-    home: &Path,
-    components: &[ComponentType],
-    exclude: Option<&Path>,
-) -> Result<Vec<TransferItem>> {
-    let config = WizardConfig {
-        components: components.to_vec(),
-        app_rules: crate::applications::load_effective_rules(),
-        ..WizardConfig::new(MigrationMode::LocalArchive, home)
-    };
-    let mut wizard = MigrationWizard::new(config);
-    let inventory = wizard.scan()?.clone();
-    let mut items = inventory.items;
-    if let Some(exclude) = exclude {
-        let exclude = absolute_path(exclude);
-        items.retain(|item| item.source != exclude);
-    }
-    Ok(items)
-}
-
-/// Привести путь к абсолютному (для сравнения с путями файлов профиля).
-fn absolute_path(path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        match std::env::current_dir() {
-            Ok(dir) => dir.join(path),
-            Err(_) => path.to_path_buf(),
         }
     }
 }

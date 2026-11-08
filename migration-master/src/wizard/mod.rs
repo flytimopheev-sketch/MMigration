@@ -20,12 +20,13 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::applications::AppRule;
-use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
+use crate::archive::{ArchiveManager, ArchiveMetadata, CreateArchiveOptions, RestoreOptions};
 use crate::backup::BackupManager;
 use crate::cancel::{CancelHandle, CancelToken};
 use crate::compatibility::{self, CompatibilityReport, SourceMetadata};
 use crate::config::{self, ComponentType, MigrationMode};
 use crate::conflict_resolver::ConflictStrategy;
+use crate::cron_jobs::CronJobs;
 use crate::database::{DatabaseManager, MigrationRecord, OperationType};
 use crate::error::{MigrationError, Result};
 use crate::file_transfer::{ProgressObserver, TransferItem};
@@ -35,6 +36,7 @@ use crate::printers::PrinterManager;
 use crate::report::{MigrationReport, ReportFormat};
 use crate::ssh_keys::SshKeysScanner;
 use crate::ssh_transfer::{SshTarget, SshTransfer, SshTransferOptions};
+use crate::system_settings::SystemSettings;
 
 /// Версия формата сохраняемого состояния мастера.
 pub const STATE_VERSION: u32 = 1;
@@ -170,6 +172,9 @@ pub struct WizardConfig {
     pub ssh: Option<SshTarget>,
     /// Стратегия конфликтов
     pub conflict_strategy: ConflictStrategy,
+    /// Спрашивать о конфликтах в консоли (только CLI; GUI использует безопасный default)
+    #[serde(default)]
+    pub interactive_conflicts: bool,
     /// Режим без реальных изменений
     pub dry_run: bool,
     /// Проверять хеши после восстановления
@@ -189,6 +194,15 @@ pub struct WizardConfig {
     pub app_rules: Vec<AppRule>,
     /// Ограничение скорости передачи, байт/с (0 — без ограничения)
     pub rate_limit: u64,
+    /// Установить пользовательские пакеты из архива (только с явным согласием)
+    #[serde(default)]
+    pub install_packages: bool,
+    /// Настроить принтеры из архива (только с явным согласием)
+    #[serde(default)]
+    pub configure_printers: bool,
+    /// Применить dconf/crontab из архива (только с явным согласием)
+    #[serde(default)]
+    pub apply_system_settings: bool,
     /// Создавать резервную копию перед перезаписью (§9)
     pub auto_backup: bool,
     /// Каталог резервных копий (по умолчанию — каталог данных приложения)
@@ -216,6 +230,7 @@ impl WizardConfig {
             passphrase: None,
             ssh: None,
             conflict_strategy: ConflictStrategy::Ask,
+            interactive_conflicts: false,
             dry_run: false,
             verify: true,
             compression_level: 3,
@@ -225,6 +240,9 @@ impl WizardConfig {
             include_authorized_keys: false,
             app_rules: crate::applications::builtin_rules(),
             rate_limit: 0,
+            install_packages: false,
+            configure_printers: false,
+            apply_system_settings: false,
             auto_backup: true,
             backup_dir: None,
             report_dir: None,
@@ -345,6 +363,8 @@ pub struct ScanInventory {
     pub applications: Vec<AppBreakdown>,
     /// Предупреждения включённых правил приложений (§5)
     pub app_warnings: Vec<String>,
+    /// Метаданные профиля, не являющиеся файлами (пакеты, принтеры, dconf, cron)
+    pub metadata: ArchiveMetadata,
 }
 
 /// Разбивка переноса по приложениям (§5).
@@ -383,6 +403,10 @@ pub struct PreviewPlan {
     pub conflicts: Vec<String>,
     /// Предупреждения для этапа просмотра
     pub warnings: Vec<String>,
+    /// Краткое описание метаданных (пакеты, принтеры, dconf, cron)
+    pub metadata_summary: String,
+    /// Метаданные профиля для детального просмотра
+    pub metadata: ArchiveMetadata,
 }
 
 /// Мастер миграции пользователя.
@@ -579,7 +603,12 @@ impl MigrationWizard {
 
         for component in self.config.components.clone() {
             let start = inventory.items.len();
-            for root in component.default_paths(&self.config.source_home) {
+            let roots = scan_roots_for_component(
+                component,
+                &self.config.source_home,
+                &self.config.app_rules,
+            );
+            for root in roots {
                 if !root.exists() {
                     continue;
                 }
@@ -608,6 +637,18 @@ impl MigrationWizard {
         inventory.private_keys = private_keys;
         inventory.excluded.extend(skipped);
 
+        // Сам архив не должен попадать в новый архив, если пользователь
+        // выбрал путь внутри сканируемого каталога (например, Documents).
+        if let Some(archive) = self.config.archive_path.as_deref() {
+            let before = inventory.items.len();
+            inventory.items.retain(|item| item.source != archive);
+            if inventory.items.len() != before {
+                inventory
+                    .excluded
+                    .push(format!("{} (сам архив)", archive.display()));
+            }
+        }
+
         inventory.items.sort_by(|a, b| a.source.cmp(&b.source));
         inventory.items.dedup_by(|a, b| a.source == b.source);
         inventory.total_files = inventory.items.len() as u64;
@@ -618,9 +659,59 @@ impl MigrationWizard {
         inventory.applications = applications;
         inventory.app_warnings = app_warnings;
 
+        // Метаданные имеют смысл только при создании архива/прямой передаче.
+        // При восстановлении источник — сам архив, а не текущий профиль.
+        if self.config.mode != MigrationMode::Restore {
+            inventory.metadata = self.collect_metadata();
+        }
+
         self.stage = WizardStage::Scanned;
         self.inventory = Some(inventory);
         Ok(self.inventory.as_ref().expect("inventory set"))
+    }
+
+    /// Собрать метаданные выбранных компонентов (пакеты, принтеры, dconf, cron).
+    fn collect_metadata(&self) -> ArchiveMetadata {
+        let mut metadata = ArchiveMetadata::default();
+        let components = &self.config.components;
+
+        if components.contains(&ComponentType::Packages) {
+            match PackageManager::detect().list_user_installed() {
+                Ok(packages) => metadata.packages = packages,
+                Err(error) => metadata
+                    .warnings
+                    .push(format!("список пакетов не получен: {}", error)),
+            }
+        }
+
+        if components.contains(&ComponentType::Printers) {
+            match PrinterManager::list() {
+                Ok(printers) => metadata.printers = printers,
+                Err(error) => metadata
+                    .warnings
+                    .push(format!("принтеры не получены: {}", error)),
+            }
+        }
+
+        if components.contains(&ComponentType::SystemSettings) {
+            match SystemSettings::dump_dconf_to_string() {
+                Ok(dump) => metadata.dconf = dump,
+                Err(error) => metadata
+                    .warnings
+                    .push(format!("dconf не выгружен: {}", error)),
+            }
+        }
+
+        if components.contains(&ComponentType::CronJobs) {
+            match CronJobs::collect() {
+                Ok(crontab) => metadata.crontab = crontab,
+                Err(error) => metadata
+                    .warnings
+                    .push(format!("crontab не прочитан: {}", error)),
+            }
+        }
+
+        metadata
     }
 
     /// Обязательный путь к архиву.
@@ -729,6 +820,13 @@ impl MigrationWizard {
         }
         // §5: предупреждения правил приложений.
         warnings.extend(inventory.app_warnings.clone());
+        warnings.extend(inventory.metadata.warnings.clone());
+        if !inventory.metadata.is_empty() {
+            warnings.push(format!(
+                "в архив попадут метаданные: {}",
+                inventory.metadata.summary()
+            ));
+        }
 
         let conflicts = self.target_conflicts().unwrap_or_default();
         if !conflicts.is_empty() {
@@ -746,6 +844,8 @@ impl MigrationWizard {
             private_keys: inventory.private_keys.clone(),
             conflicts,
             warnings,
+            metadata_summary: inventory.metadata.summary(),
+            metadata: inventory.metadata.clone(),
         })
     }
 
@@ -951,6 +1051,7 @@ impl MigrationWizard {
             source_home: self.config.source_home.clone(),
             items: inventory.items.clone(),
             components: self.config.components.clone(),
+            metadata: inventory.metadata.clone(),
             passphrase: self.config.passphrase.clone(),
             compression_level: self.config.compression_level,
             dry_run: self.config.dry_run,
@@ -985,14 +1086,68 @@ impl MigrationWizard {
             strategy: self.config.conflict_strategy,
             verify_hash: self.config.verify,
             dry_run: self.config.dry_run,
+            install_packages: self.config.install_packages,
+            configure_printers: self.config.configure_printers,
+            apply_system_settings: self.config.apply_system_settings,
             cancel: Some(self.cancel.clone()),
         };
 
-        let result = ArchiveManager::restore(&options, observer)?;
+        let result =
+            if options.strategy == ConflictStrategy::Ask && self.config.interactive_conflicts {
+                ArchiveManager::restore_with_handler(
+                    &options,
+                    observer,
+                    crate::conflict_resolver::prompt_conflict_console,
+                )?
+            } else {
+                ArchiveManager::restore(&options, observer)?
+            };
         report.stats.files_copied = result.restored_files;
         report.stats.bytes_copied = result.restored_bytes;
         report.stats.files_skipped = result.skipped_files;
         report.stats.conflicts_resolved = result.conflicts.len() as u64;
+        report.warnings.extend(result.warnings.clone());
+        report.applied_settings = result.applied_settings.clone();
+        report.installed_packages = result.installed_packages.clone();
+        report.stats.packages = result.installed_packages.len() as u64;
+
+        // dconf — пользовательская настройка, root не нужен. Применяем её
+        // автоматически, если компонент выбран и пользователь не отключил
+        // системные настройки (dry-run ничего не меняет).
+        if !self.config.dry_run
+            && self
+                .config
+                .components
+                .contains(&ComponentType::SystemSettings)
+            && !self.config.apply_system_settings
+        {
+            if let Some(dump) = result.metadata.dconf.as_deref() {
+                if !dump.trim().is_empty() {
+                    match SystemSettings::apply_dconf_dump(dump) {
+                        Ok(()) => report.applied_settings.push("применён dconf".to_string()),
+                        Err(error) => report
+                            .warnings
+                            .push(format!("не удалось применить dconf: {}", error)),
+                    }
+                }
+            }
+        }
+        if self
+            .config
+            .components
+            .contains(&ComponentType::SystemSettings)
+        {
+            report.add_recommendation(
+                "перезайдите в сеанс, чтобы настройки dconf/темы применились полностью".to_string(),
+            );
+        }
+
+        if !result.skipped_paths.is_empty() {
+            report.warnings.push(format!(
+                "пропущено файлов из-за конфликтов: {} (профиль восстановлен не полностью)",
+                result.skipped_paths.len()
+            ));
+        }
 
         for conflict in &result.conflicts {
             let description = conflict.describe();
@@ -1000,6 +1155,34 @@ impl MigrationWizard {
             report.warnings.push(description);
         }
         report.errors.extend(result.errors);
+
+        if !result.metadata.packages.is_empty() {
+            report.add_recommendation(format!(
+                "в архиве {} пользовательских пакетов; при необходимости повторите \
+                 восстановление с установкой пакетов (--install-packages)",
+                result.metadata.packages.len()
+            ));
+        }
+        if !result.metadata.printers.is_empty() && !self.config.configure_printers {
+            report.add_recommendation(format!(
+                "в архиве {} принтеров; настройка не выполнялась (--configure-printers)",
+                result.metadata.printers.len()
+            ));
+        }
+        if result
+            .metadata
+            .crontab
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+            && self.config.components.contains(&ComponentType::CronJobs)
+        {
+            report.add_recommendation(
+                "crontab в архиве отсутствует или пуст — восстанавливать нечего".to_string(),
+            );
+        }
+
         Ok(())
     }
 
@@ -1041,7 +1224,11 @@ impl MigrationWizard {
         }
 
         for component in self.config.components.clone() {
-            for root in component.default_paths(&self.config.source_home) {
+            for root in scan_roots_for_component(
+                component,
+                &self.config.source_home,
+                &self.config.app_rules,
+            ) {
                 self.cancel.check()?;
                 if !root.exists() {
                     continue;
@@ -1136,10 +1323,80 @@ impl MigrationWizard {
 
         if self.config.components.contains(&ComponentType::Packages) {
             report.add_recommendation(format!(
-                "список пакетов источника восстанавливайте через {} (§11)",
+                "список пользовательских пакетов источника можно установить через \
+                 {} или повторить восстановление с --install-packages (§11)",
                 PackageManager::detect().list_tool()
             ));
         }
+
+        if self.config.dry_run {
+            return;
+        }
+
+        if self.config.components.contains(&ComponentType::Fonts) {
+            match SystemSettings::refresh_font_cache() {
+                Ok(()) => report
+                    .applied_settings
+                    .push("обновлён кэш шрифтов".to_string()),
+                Err(error) => report
+                    .warnings
+                    .push(format!("fc-cache не выполнен: {}", error)),
+            }
+        }
+
+        if self.config.components.contains(&ComponentType::LocalApps) {
+            match SystemSettings::refresh_desktop_database(&target) {
+                Ok(()) => report
+                    .applied_settings
+                    .push("обновлена база .desktop-файлов".to_string()),
+                Err(error) => report
+                    .warnings
+                    .push(format!("update-desktop-database не выполнен: {}", error)),
+            }
+        }
+
+        if self
+            .config
+            .components
+            .contains(&ComponentType::UserServices)
+        {
+            match SystemSettings::reload_user_systemd() {
+                Ok(()) => report
+                    .applied_settings
+                    .push("systemctl --user daemon-reload".to_string()),
+                Err(error) => report.warnings.push(format!(
+                    "не удалось перечитать пользовательские systemd-юниты: {}",
+                    error
+                )),
+            }
+            let units = SystemSettings::enabled_user_units();
+            if !units.is_empty() {
+                report.add_recommendation(format!(
+                    "проверьте включённые пользовательские юниты: {}",
+                    units.join(", ")
+                ));
+            }
+        }
+
+        if self.config.components.contains(&ComponentType::CronJobs) {
+            report.add_recommendation(
+                "crontab восстанавливается только с явным флагом \
+                 --apply-system-settings (в GUI — соответствующий переключатель)"
+                    .to_string(),
+            );
+        }
+
+        // §17: честно фиксируем границы переноса метаданных.
+        report.add_recommendation(
+            "права файлов сохраняются; владелец, ACL, xattr, SELinux-контекст, \
+             capabilities и жёсткие ссылки не переносятся"
+                .to_string(),
+        );
+        report.add_recommendation(
+            "пустые каталоги и метаданные (пакеты, принтеры, dconf, cron) \
+             восстанавливаются только при явном выборе соответствующих опций"
+                .to_string(),
+        );
     }
 
     /// Начать запись истории операции в SQLite (§16).
@@ -1207,6 +1464,78 @@ impl MigrationWizard {
             let _ = database.save_migration(&record);
         }
     }
+}
+
+/// Пути сканирования компонента: стандартные каталоги + пути правил приложений.
+///
+/// `AppConfigs`/`AppData` дополняются конкретными путями из правил (Firefox,
+/// Thunderbird, Chrome и т.п.). Вложенные пути схлопываются: если уже выбран
+/// `~/.config`, отдельный `~/.config/google-chrome` не нужен.
+fn scan_roots_for_component(
+    component: ComponentType,
+    home: &Path,
+    rules: &[AppRule],
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for root in component.default_paths(home) {
+        add_scan_root(&mut roots, home, root);
+    }
+
+    let rule_paths: Vec<&String> = match component {
+        ComponentType::AppConfigs => rules
+            .iter()
+            .filter(|rule| rule.enabled && rule.transfer_mode != "skip")
+            .flat_map(|rule| rule.config_paths.iter())
+            .collect(),
+        ComponentType::AppData => rules
+            .iter()
+            .filter(|rule| rule.enabled && rule.transfer_mode != "skip")
+            .flat_map(|rule| rule.data_paths.iter())
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    for raw in rule_paths {
+        if let Some(root) = normalize_rule_path(home, raw) {
+            add_scan_root(&mut roots, home, root);
+        }
+    }
+
+    roots
+}
+
+/// Привести путь правила к безопасному пути внутри HOME.
+fn normalize_rule_path(home: &Path, raw: &str) -> Option<PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let relative = raw
+        .strip_prefix("~/")
+        .or_else(|| raw.strip_prefix('/'))
+        .unwrap_or(raw);
+    let relative = Path::new(relative);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let path = home.join(relative);
+    (path != home && path.starts_with(home)).then_some(path)
+}
+
+/// Добавить корень, не дублируя вложенные пути.
+fn add_scan_root(roots: &mut Vec<PathBuf>, home: &Path, root: PathBuf) {
+    if root == home || !root.starts_with(home) {
+        return;
+    }
+    if roots.iter().any(|existing| root.starts_with(existing)) {
+        return;
+    }
+    roots.retain(|existing| !existing.starts_with(&root));
+    roots.push(root);
 }
 
 /// Собрать файлы каталога в инвентарь (относительно домашнего каталога).

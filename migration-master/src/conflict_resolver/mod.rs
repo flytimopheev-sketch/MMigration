@@ -9,6 +9,51 @@ use crate::security;
 /// Интерактивный обработчик конфликта, возвращающий выбранную стратегию.
 pub type ConflictHandler = Box<dyn FnMut(&ConflictInfo) -> ConflictStrategy + Send>;
 
+/// Консольный диалог разрешения конфликта.
+///
+/// Используется только CLI. В GUI per-file диалог заменён безопасным
+/// `rename`: фоновый поток не может показать модальное окно для каждого файла.
+pub fn prompt_conflict_console(conflict: &ConflictInfo) -> ConflictStrategy {
+    use std::io::{self, IsTerminal, Write};
+
+    if !io::stdin().is_terminal() {
+        eprintln!(
+            "конфликт «{}», но stdin не терминал — файл пропущен",
+            conflict.relative_path.display()
+        );
+        return ConflictStrategy::Skip;
+    }
+
+    loop {
+        eprintln!();
+        eprintln!("Конфликт: {}", conflict.describe());
+        eprintln!("  [1] заменить файл в цели");
+        eprintln!("  [2] пропустить файл");
+        eprintln!("  [3] сохранить оба файла");
+        eprintln!("  [4] переименовать старый в .old");
+        eprintln!("  [5] заменить, только если в архиве новее");
+        eprint!("Выбор [1-5]: ");
+        let _ = io::stderr().flush();
+
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).is_err() {
+            return ConflictStrategy::Skip;
+        }
+        match answer.trim() {
+            "1" | "replace" | "заменить" => return ConflictStrategy::Replace,
+            "2" | "skip" | "пропустить" => return ConflictStrategy::Skip,
+            "3" | "keep-both" | "оба" => return ConflictStrategy::KeepBoth,
+            "4" | "rename" | "переименовать" => return ConflictStrategy::RenameOld,
+            "5" | "newer" | "новее" => return ConflictStrategy::Newer,
+            "" => {
+                eprintln!("ввод пуст — файл пропущен");
+                return ConflictStrategy::Skip;
+            }
+            _ => eprintln!("неизвестный выбор, повторите"),
+        }
+    }
+}
+
 /// Стратегия разрешения конфликтов.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,6 +224,12 @@ impl ConflictResolver {
         self
     }
 
+    /// Установить готовый интерактивный обработчик.
+    pub fn with_handler(mut self, handler: ConflictHandler) -> Self {
+        self.interactive = Some(handler);
+        self
+    }
+
     /// Текущая стратегия.
     pub fn strategy(&self) -> ConflictStrategy {
         self.strategy
@@ -254,8 +305,17 @@ impl ConflictResolver {
         let decision = match self.strategy {
             ConflictStrategy::Ask => match self.interactive.as_mut() {
                 Some(handler) => handler(&conflict),
-                // Без обработчика безопасное поведение — пропуск файла
-                None => ConflictStrategy::Skip,
+                // Молчаливый пропуск файлов опасен: пользователь может решить,
+                // что профиль восстановлен полностью. Без обработчика требуем
+                // явно выбрать стратегию.
+                None => {
+                    return Err(MigrationError::InvalidInput(format!(
+                        "обнаружен конфликт файла «{}», но стратегия ask не имеет \
+                         интерактивного обработчика. Укажите --strategy rename, replace, \
+                         skip, keep-both или newer",
+                        conflict.relative_path.display()
+                    )))
+                }
             },
             ConflictStrategy::Newer => match conflict.kind {
                 ConflictKind::SourceNewer => ConflictStrategy::Replace,
@@ -501,14 +561,13 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_ask_without_handler_skips() {
+    fn test_resolve_ask_without_handler_returns_error() {
         let mut resolver = ConflictResolver::new(ConflictStrategy::Ask);
-        assert_eq!(
-            resolver
-                .resolve(conflict("file.txt", ConflictKind::Different, 1, 2))
-                .expect("resolve"),
-            ConflictStrategy::Skip
-        );
+        let error = resolver
+            .resolve(conflict("file.txt", ConflictKind::Different, 1, 2))
+            .expect_err("без обработчика ask должен возвращать ошибку");
+        assert!(error.to_string().contains("ask"));
+        assert!(error.to_string().contains("--strategy"));
     }
 
     #[test]

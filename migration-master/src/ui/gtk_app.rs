@@ -17,16 +17,19 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{glib, Orientation};
 
-use crate::archive::{ArchiveManager, CreateArchiveOptions, RestoreOptions};
+use crate::archive::ArchiveManager;
 use crate::config::{self, ComponentType, MigrationMode};
 use crate::database::DatabaseManager;
 use crate::error::{MigrationError, Result};
-use crate::file_transfer::{ProgressObserver, TransferItem};
+use crate::file_transfer::ProgressObserver;
 use crate::polkit::PolkitManager;
-use crate::report::render_history_text;
+use crate::report::{render_history_text, MigrationReport};
+use crate::security::{estimate_password_strength, generate_password, password_strength_label};
 use crate::ssh_transfer::SshTarget;
 use crate::ui::main_screen::MainScreenInfo;
-use crate::ui::util::{conflict_strategy, parse_ssh_target, STRATEGY_LABELS};
+use crate::ui::util::{
+    conflict_strategy, parse_ssh_target, DEFAULT_STRATEGY_INDEX, STRATEGY_LABELS,
+};
 use crate::wizard::{MigrationWizard, WizardConfig};
 
 /// Запустить графический интерфейс (блокирует поток до закрытия окна).
@@ -413,6 +416,264 @@ fn password_entry() -> (gtk::Entry, gtk::Box) {
     (entry, container)
 }
 
+/// Текстовая оценка пароля для формы создания архива (§15).
+fn password_strength_text(password: &str) -> String {
+    if password.is_empty() {
+        return "Пароль не задан — архив будет без шифрования.".to_string();
+    }
+    let score = estimate_password_strength(password);
+    format!(
+        "Стойкость: {} ({} из 4)",
+        password_strength_label(score),
+        score
+    )
+}
+
+/// Поля пароля с подтверждением, индикатором стойкости и генерацией (§15).
+///
+/// Используется только при создании архива. При восстановлении достаточно
+/// одного поля: пароль должен совпасть с тем, которым архив был зашифрован.
+fn create_password_widget() -> (gtk::Entry, gtk::Entry, gtk::Box) {
+    let entry = gtk::Entry::new();
+    entry.set_hexpand(true);
+    entry.set_visibility(false);
+    entry.set_input_purpose(gtk::InputPurpose::Password);
+    entry.set_placeholder_text(Some("Пароль для шифрования архива"));
+
+    let confirm = gtk::Entry::new();
+    confirm.set_hexpand(true);
+    confirm.set_visibility(false);
+    confirm.set_input_purpose(gtk::InputPurpose::Password);
+    confirm.set_placeholder_text(Some("Повторите пароль"));
+
+    let show = gtk::CheckButton::with_label("Показать");
+    show.set_valign(gtk::Align::Center);
+    let entry_for_show = entry.clone();
+    let confirm_for_show = confirm.clone();
+    show.connect_toggled(move |button| {
+        let visible = button.is_active();
+        entry_for_show.set_visibility(visible);
+        confirm_for_show.set_visibility(visible);
+    });
+
+    let generate = gtk::Button::with_label("Сгенерировать");
+    let entry_for_generate = entry.clone();
+    let confirm_for_generate = confirm.clone();
+    generate.connect_clicked(move |_| {
+        let password = generate_password(24);
+        entry_for_generate.set_text(&password);
+        confirm_for_generate.set_text(&password);
+    });
+
+    let first_row = gtk::Box::new(Orientation::Horizontal, 6);
+    first_row.append(&entry);
+    first_row.append(&show);
+    first_row.append(&generate);
+
+    let strength = gtk::Label::new(Some(&password_strength_text("")));
+    strength.set_xalign(0.0);
+    strength.set_wrap(true);
+    strength.add_css_class("dim-label");
+
+    let entry_for_strength = entry.clone();
+    let strength_for_signal = strength.clone();
+    entry.connect_changed(move |_| {
+        strength_for_signal.set_text(&password_strength_text(entry_for_strength.text().as_str()));
+    });
+
+    let note = gtk::Label::new(Some(
+        "Пароль не сохраняется и не попадает в журнал. \
+         Восстановить забытый пароль невозможно.",
+    ));
+    note.set_xalign(0.0);
+    note.set_wrap(true);
+    note.add_css_class("dim-label");
+
+    let container = gtk::Box::new(Orientation::Vertical, 6);
+    container.append(&first_row);
+    container.append(&strength);
+    container.append(&confirm);
+    container.append(&note);
+    (entry, confirm, container)
+}
+
+/// Текущий токен отмены страницы (обновляется для каждой операции).
+type CancelSlot = Arc<Mutex<Option<crate::cancel::CancelToken>>>;
+
+fn new_cancel_slot() -> CancelSlot {
+    Arc::new(Mutex::new(None))
+}
+
+/// Начать операцию и опубликовать её токен для кнопки «Отменить».
+fn begin_operation(slot: &CancelSlot) -> crate::cancel::CancelToken {
+    let token = crate::cancel::CancelToken::new();
+    if let Ok(mut current) = slot.lock() {
+        *current = Some(token.clone());
+    }
+    token
+}
+
+/// Завершить операцию и снять токен с кнопки «Отменить».
+fn finish_operation(slot: &CancelSlot) {
+    if let Ok(mut current) = slot.lock() {
+        *current = None;
+    }
+}
+
+/// Кнопка отмены, связанная с активной операцией страницы (§16).
+fn cancel_button(slot: &CancelSlot) -> gtk::Button {
+    let button = gtk::Button::with_label("Отменить");
+    button.set_sensitive(false);
+    let slot = Arc::clone(slot);
+    button.connect_clicked(move |button| {
+        if let Ok(current) = slot.lock() {
+            if let Some(token) = current.as_ref() {
+                token.cancel();
+            }
+        }
+        button.set_sensitive(false);
+    });
+    button
+}
+
+/// Параметры формы создания архива.
+struct CreateFormValues {
+    source_home: PathBuf,
+    output: PathBuf,
+    passphrase: Option<String>,
+    compression_level: i32,
+    dry_run: bool,
+    components: Vec<ComponentType>,
+    include_private_ssh_keys: bool,
+    include_authorized_keys: bool,
+}
+
+/// Прочитать и проверить форму создания архива.
+fn read_create_form(
+    home_entry: &gtk::Entry,
+    output_entry: &gtk::Entry,
+    pass_entry: &gtk::Entry,
+    pass_confirm: &gtk::Entry,
+    compression: &gtk::SpinButton,
+    dry_check: &gtk::CheckButton,
+    private_keys_check: &gtk::CheckButton,
+    authorized_keys_check: &gtk::CheckButton,
+    checks: &[(ComponentType, gtk::CheckButton)],
+) -> std::result::Result<CreateFormValues, String> {
+    let source_home = expand_tilde(PathBuf::from(home_entry.text().to_string()));
+    let output = {
+        let entered = expand_tilde(PathBuf::from(output_entry.text().to_string()));
+        if entered.is_absolute() {
+            entered
+        } else {
+            default_home().join(entered)
+        }
+    };
+    let password = pass_entry.text().to_string();
+    let confirmation = pass_confirm.text().to_string();
+    if password != confirmation {
+        return Err("Пароли не совпадают. Введите одинаковый пароль в двух полях.".to_string());
+    }
+    let passphrase = if password.is_empty() {
+        None
+    } else {
+        Some(password)
+    };
+    let components: Vec<ComponentType> = checks
+        .iter()
+        .filter(|(_, check)| check.is_active())
+        .map(|(component, _)| *component)
+        .collect();
+
+    if !source_home.is_dir() {
+        return Err("Укажите существующий домашний каталог.".to_string());
+    }
+    if output.as_os_str().is_empty() {
+        return Err("Укажите путь к файлу архива (.rmm).".to_string());
+    }
+    if components.is_empty() {
+        return Err("Выберите хотя бы один компонент для переноса.".to_string());
+    }
+
+    Ok(CreateFormValues {
+        source_home,
+        output,
+        passphrase,
+        compression_level: compression.value().round() as i32,
+        dry_run: dry_check.is_active(),
+        components,
+        include_private_ssh_keys: private_keys_check.is_active(),
+        include_authorized_keys: authorized_keys_check.is_active(),
+    })
+}
+
+/// Собрать конфигурацию мастера для создания архива.
+fn create_wizard_config(
+    values: CreateFormValues,
+    cancel: crate::cancel::CancelToken,
+) -> WizardConfig {
+    let mut wizard_config = WizardConfig::new(MigrationMode::LocalArchive, values.source_home);
+    wizard_config.archive_path = Some(values.output);
+    wizard_config.components = values.components;
+    wizard_config.passphrase = values.passphrase;
+    wizard_config.compression_level = values.compression_level;
+    wizard_config.dry_run = values.dry_run;
+    wizard_config.include_private_ssh_keys = values.include_private_ssh_keys;
+    wizard_config.include_authorized_keys = values.include_authorized_keys;
+    wizard_config.app_rules = crate::applications::load_effective_rules();
+    wizard_config.database_path = config::load_config().ok().map(|cfg| cfg.database_path);
+    wizard_config.cancel = Some(cancel);
+    wizard_config
+}
+
+/// Краткий итог операции для финального экрана (§16).
+fn operation_summary(report: &MigrationReport, paths: &[std::path::Path]) -> String {
+    let mut lines = vec![
+        format!("Статус: {}", report.status()),
+        format!(
+            "Файлов перенесено: {} ({}); пропущено: {}; конфликтов: {}",
+            report.stats.files_copied,
+            human_bytes::human_bytes(report.stats.bytes_copied as f64),
+            report.stats.files_skipped,
+            report.stats.conflicts_resolved
+        ),
+    ];
+    if !report.installed_packages.is_empty() {
+        lines.push(format!(
+            "Установлено пакетов: {}",
+            report.installed_packages.len()
+        ));
+    }
+    if !report.restored_printers.is_empty() {
+        lines.push(format!(
+            "Настроено принтеров: {}",
+            report.restored_printers.len()
+        ));
+    }
+    if !report.applied_settings.is_empty() {
+        lines.push(format!(
+            "Применено настроек: {}",
+            report.applied_settings.join(", ")
+        ));
+    }
+    if !report.errors.is_empty() {
+        lines.push(format!("Ошибки ({}):", report.errors.len()));
+        lines.extend(report.errors.iter().take(10).cloned());
+    }
+    if !report.warnings.is_empty() {
+        lines.push(format!("Предупреждения ({}):", report.warnings.len()));
+        lines.extend(report.warnings.iter().take(10).cloned());
+    }
+    if !report.recommendations.is_empty() {
+        lines.push("Рекомендации:".to_string());
+        lines.extend(report.recommendations.iter().take(10).cloned());
+    }
+    if let Some(path) = paths.first() {
+        lines.push(format!("Отчёт: {}", path.display()));
+    }
+    lines.join("\n")
+}
+
 /// Предупреждения о недоступных инструментах (§1).
 fn warning_box(info: &MainScreenInfo) -> gtk::Box {
     let box_ = gtk::Box::new(Orientation::Vertical, 6);
@@ -584,7 +845,7 @@ fn create_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
         .build();
     form.add(&entry_row("Файл архива (.rmm)", &output_entry));
 
-    let (pass_entry, pass_widget) = password_entry();
+    let (pass_entry, pass_confirm, pass_widget) = create_password_widget();
     form.add(&entry_row(
         "Пароль шифрования (не сохраняется)",
         &pass_widget,
@@ -625,11 +886,49 @@ fn create_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     dry_row.add_suffix(&dry_check);
     dry_row.set_activatable_widget(Some(&dry_check));
     options_group.add(&dry_row);
+
+    let private_keys_row = adw::ActionRow::builder()
+        .title("Переносить приватные SSH-ключи")
+        .subtitle("Опасно: ключи будут внутри архива; включайте только для доверенного носителя")
+        .build();
+    let private_keys_check = gtk::CheckButton::new();
+    private_keys_check.set_valign(gtk::Align::Center);
+    private_keys_row.add_suffix(&private_keys_check);
+    private_keys_row.set_activatable_widget(Some(&private_keys_check));
+    options_group.add(&private_keys_row);
+
+    let authorized_keys_row = adw::ActionRow::builder()
+        .title("Переносить authorized_keys")
+        .subtitle("Разрешает вход на новый компьютер по тем же открытым ключам")
+        .build();
+    let authorized_keys_check = gtk::CheckButton::new();
+    authorized_keys_check.set_valign(gtk::Align::Center);
+    authorized_keys_row.add_suffix(&authorized_keys_check);
+    authorized_keys_row.set_activatable_widget(Some(&authorized_keys_check));
+    options_group.add(&authorized_keys_row);
     content.append(&options_group);
 
+    let metadata_note = gtk::Label::new(Some(
+        "Для компонентов «Пакеты», «Принтеры», «Системные настройки» и «Cron» \
+         в манифест сохраняются метаданные. Пакеты и принтеры восстанавливаются \
+         только с явным согласием через pkexec.",
+    ));
+    metadata_note.set_xalign(0.0);
+    metadata_note.set_wrap(true);
+    metadata_note.add_css_class("dim-label");
+    content.append(&metadata_note);
+
+    let preview_button = gtk::Button::with_label("Проверить план");
     let run_button = gtk::Button::with_label("Создать архив");
     run_button.add_css_class("suggested-action");
-    content.append(&run_button);
+    let cancel_slot = new_cancel_slot();
+    let cancel_btn = cancel_button(&cancel_slot);
+
+    let buttons = gtk::Box::new(Orientation::Horizontal, 8);
+    buttons.append(&preview_button);
+    buttons.append(&run_button);
+    buttons.append(&cancel_btn);
+    content.append(&buttons);
 
     let progress = gtk::ProgressBar::new();
     progress.set_show_text(true);
@@ -642,14 +941,20 @@ fn create_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
 
     bind_create_action(
         window,
+        &preview_button,
         &run_button,
+        &cancel_btn,
+        &cancel_slot,
         &progress,
         &status,
         &home_entry,
         &output_entry,
         &pass_entry,
+        &pass_confirm,
         &compression,
         &dry_check,
+        &private_keys_check,
+        &authorized_keys_check,
         checks,
     );
 
@@ -660,118 +965,196 @@ fn create_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
 #[allow(clippy::too_many_arguments)]
 fn bind_create_action(
     window: &adw::ApplicationWindow,
+    preview_button: &gtk::Button,
     run_button: &gtk::Button,
+    cancel_btn: &gtk::Button,
+    cancel_slot: &CancelSlot,
     progress: &gtk::ProgressBar,
     status: &gtk::Label,
     home_entry: &gtk::Entry,
     output_entry: &gtk::Entry,
     pass_entry: &gtk::Entry,
+    pass_confirm: &gtk::Entry,
     compression: &gtk::SpinButton,
     dry_check: &gtk::CheckButton,
+    private_keys_check: &gtk::CheckButton,
+    authorized_keys_check: &gtk::CheckButton,
     checks: Vec<(ComponentType, gtk::CheckButton)>,
 ) {
     let window = (*window).clone();
-    let run_button = (*run_button).clone();
+    let preview_widget = (*preview_button).clone();
+    let run_widget = (*run_button).clone();
+    let cancel_widget = (*cancel_btn).clone();
     let progress = (*progress).clone();
     let status = (*status).clone();
     let home_entry = (*home_entry).clone();
     let output_entry = (*output_entry).clone();
     let pass_entry = (*pass_entry).clone();
+    let pass_confirm = (*pass_confirm).clone();
     let compression = (*compression).clone();
     let dry_check = (*dry_check).clone();
+    let private_keys_check = (*private_keys_check).clone();
+    let authorized_keys_check = (*authorized_keys_check).clone();
 
-    // connect_clicked() заимствует кнопку, поэтому замыкание должно захватывать
-    // собственную копию — иначе "cannot move out of `run_button`".
-    let button = run_button.clone();
+    let checks_preview = checks.clone();
+    let checks_run = checks;
 
-    run_button.connect_clicked(move |_| {
-        let source_home = expand_tilde(PathBuf::from(home_entry.text().to_string()));
-        // Относительный путь к архиву отсчитываем от домашнего каталога:
-        // процесс GUI может быть запущен из произвольного каталога (ярлык
-        // в меню приложений), и относительный путь «против текущего
-        // каталога» там неожиданен для пользователя.
-        let output = {
-            let entered = expand_tilde(PathBuf::from(output_entry.text().to_string()));
-            if entered.is_absolute() {
-                entered
-            } else {
-                default_home().join(entered)
+    let slot_preview = Arc::clone(cancel_slot);
+    let window_preview = window.clone();
+    let preview_widget_preview = preview_widget.clone();
+    let run_widget_preview = run_widget.clone();
+    let cancel_widget_preview = cancel_widget.clone();
+    let progress_preview = progress.clone();
+    let status_preview = status.clone();
+    let home_preview = home_entry.clone();
+    let output_preview = output_entry.clone();
+    let pass_preview = pass_entry.clone();
+    let confirm_preview = pass_confirm.clone();
+    let compression_preview = compression.clone();
+    let dry_preview = dry_check.clone();
+    let private_preview = private_keys_check.clone();
+    let authorized_preview = authorized_keys_check.clone();
+    preview_widget.connect_clicked(move |_| {
+        let values = match read_create_form(
+            &home_preview,
+            &output_preview,
+            &pass_preview,
+            &confirm_preview,
+            &compression_preview,
+            &dry_preview,
+            &private_preview,
+            &authorized_preview,
+            &checks_preview,
+        ) {
+            Ok(values) => values,
+            Err(message) => {
+                show_message(&window_preview, "Проверьте параметры", &message);
+                return;
             }
         };
-        let passphrase = {
-            let text = pass_entry.text().to_string();
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
-            }
-        };
-        let compression_level = compression.value().round() as i32;
-        let dry_run = dry_check.is_active();
-        let components: Vec<ComponentType> = checks
-            .iter()
-            .filter(|(_, check)| check.is_active())
-            .map(|(component, _)| *component)
-            .collect();
 
-        if !source_home.is_dir() {
-            show_message(
-                &window,
-                "Проверьте параметры",
-                "Укажите существующий домашний каталог.",
-            );
-            return;
-        }
-        if output.as_os_str().is_empty() {
-            show_message(
-                &window,
-                "Проверьте параметры",
-                "Укажите путь к файлу архива (.rmm).",
-            );
-            return;
-        }
-        if components.is_empty() {
-            show_message(
-                &window,
-                "Проверьте параметры",
-                "Выберите хотя бы один компонент для переноса.",
-            );
-            return;
-        }
-
-        button.set_sensitive(false);
-        status.set_text("Сканирование профиля…");
-        let window_done = window.clone();
-        let button_done = button.clone();
+        preview_widget_preview.set_sensitive(false);
+        run_widget_preview.set_sensitive(false);
+        cancel_widget_preview.set_sensitive(true);
+        let token = begin_operation(&slot_preview);
+        status_preview.set_text("Сканирование профиля…");
+        let window_done = window_preview.clone();
+        let preview_done = preview_widget_preview.clone();
+        let run_done = run_widget_preview.clone();
+        let cancel_done = cancel_widget_preview.clone();
+        let slot_done = Arc::clone(&slot_preview);
         spawn_task(
-            &progress,
-            &status,
-            move |observer| {
-                let items = scan_items(&source_home, &components, Some(output.as_path()))?;
-                let options = CreateArchiveOptions {
-                    output,
-                    source_home,
-                    items,
-                    components,
-                    passphrase,
-                    compression_level,
-                    dry_run,
-                    cancel: Some(crate::cancel::global()),
-                };
-                let created = ArchiveManager::create(&options, observer)?;
-                Ok(format!(
-                    "Архив {}: {} файлов, {}",
-                    if dry_run {
-                        "проверен (dry-run)"
-                    } else {
-                        "создан"
-                    },
-                    created.manifest.total_files,
-                    human_bytes::human_bytes(created.manifest.total_size as f64)
-                ))
+            &progress_preview,
+            &status_preview,
+            move |_observer| {
+                let mut wizard = MigrationWizard::new(create_wizard_config(values, token));
+                let plan = wizard.preview()?;
+                let mut lines = vec![
+                    format!(
+                        "Файлов: {} ({}), свободно: {}",
+                        plan.total_files,
+                        human_bytes::human_bytes(plan.total_size as f64),
+                        human_bytes::human_bytes(plan.free_bytes as f64)
+                    ),
+                    format!("Метаданные: {}", plan.metadata_summary),
+                ];
+                if !plan.conflicts.is_empty() {
+                    lines.push(format!("Конфликтов в цели: {}", plan.conflicts.len()));
+                }
+                for (component, files, bytes) in plan.by_component.iter().take(12) {
+                    lines.push(format!(
+                        "{}: {} файлов, {}",
+                        component.description(),
+                        files,
+                        human_bytes::human_bytes(*bytes as f64)
+                    ));
+                }
+                if !plan.warnings.is_empty() {
+                    lines.push("Предупреждения:".to_string());
+                    lines.extend(plan.warnings.iter().take(10).cloned());
+                }
+                if plan.total_files == 0 && plan.metadata.is_empty() {
+                    lines.push("В выбранных компонентах нет ни файлов, ни метаданных.".to_string());
+                }
+                Ok(lines.join("\n"))
             },
             move |success, summary| {
-                button_done.set_sensitive(true);
+                preview_done.set_sensitive(true);
+                run_done.set_sensitive(true);
+                cancel_done.set_sensitive(false);
+                finish_operation(&slot_done);
+                let heading = if success {
+                    "План"
+                } else {
+                    "Ошибка проверки"
+                };
+                show_message(&window_done, heading, summary);
+            },
+        );
+    });
+
+    let slot_run = Arc::clone(cancel_slot);
+    let window_run = window.clone();
+    let preview_widget_run = preview_widget.clone();
+    let run_widget_run = run_widget.clone();
+    let cancel_widget_run = cancel_widget.clone();
+    let progress_run = progress.clone();
+    let status_run = status.clone();
+    let home_run = home_entry.clone();
+    let output_run = output_entry.clone();
+    let pass_run = pass_entry.clone();
+    let confirm_run = pass_confirm.clone();
+    let compression_run = compression.clone();
+    let dry_run_check = dry_check.clone();
+    let private_run = private_keys_check.clone();
+    let authorized_run = authorized_keys_check.clone();
+    run_widget.connect_clicked(move |_| {
+        let values = match read_create_form(
+            &home_run,
+            &output_run,
+            &pass_run,
+            &confirm_run,
+            &compression_run,
+            &dry_run_check,
+            &private_run,
+            &authorized_run,
+            &checks_run,
+        ) {
+            Ok(values) => values,
+            Err(message) => {
+                show_message(&window_run, "Проверьте параметры", &message);
+                return;
+            }
+        };
+
+        preview_widget_run.set_sensitive(false);
+        run_widget_run.set_sensitive(false);
+        cancel_widget_run.set_sensitive(true);
+        let token = begin_operation(&slot_run);
+        status_run.set_text("Создание архива…");
+        let window_done = window_run.clone();
+        let preview_done = preview_widget_run.clone();
+        let run_done = run_widget_run.clone();
+        let cancel_done = cancel_widget_run.clone();
+        let slot_done = Arc::clone(&slot_run);
+        spawn_task(
+            &progress_run,
+            &status_run,
+            move |observer| {
+                let mut wizard = MigrationWizard::new(create_wizard_config(values, token));
+                let report = wizard.run(observer)?;
+                let summary = operation_summary(&report, wizard.report_paths());
+                if report.errors.is_empty() && !report.cancelled {
+                    Ok(summary)
+                } else {
+                    Err(MigrationError::Conflict(summary))
+                }
+            },
+            move |success, summary| {
+                preview_done.set_sensitive(true);
+                run_done.set_sensitive(true);
+                cancel_done.set_sensitive(false);
+                finish_operation(&slot_done);
                 let heading = if success {
                     "Готово"
                 } else {
@@ -781,6 +1164,147 @@ fn bind_create_action(
             },
         );
     });
+}
+
+/// Параметры формы восстановления.
+struct RestoreFormValues {
+    archive: PathBuf,
+    target_root: PathBuf,
+    passphrase: Option<String>,
+    strategy: crate::conflict_resolver::ConflictStrategy,
+    verify_hash: bool,
+    dry_run: bool,
+    install_packages: bool,
+    configure_printers: bool,
+    apply_system_settings: bool,
+}
+
+/// Прочитать и проверить форму восстановления.
+#[allow(clippy::too_many_arguments)]
+fn read_restore_form(
+    archive_entry: &gtk::Entry,
+    target_entry: &gtk::Entry,
+    pass_entry: &gtk::Entry,
+    strategy_drop: &gtk::DropDown,
+    verify_check: &gtk::CheckButton,
+    dry_check: &gtk::CheckButton,
+    packages_check: &gtk::CheckButton,
+    printers_check: &gtk::CheckButton,
+    settings_check: &gtk::CheckButton,
+) -> std::result::Result<RestoreFormValues, String> {
+    let archive = expand_tilde(PathBuf::from(archive_entry.text().to_string()));
+    let target_root = expand_tilde(PathBuf::from(target_entry.text().to_string()));
+    let passphrase = {
+        let text = pass_entry.text().to_string();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    };
+    let strategy = conflict_strategy(strategy_drop.selected());
+    if strategy == crate::conflict_resolver::ConflictStrategy::Ask {
+        return Err(
+            "Стратегия «Спрашивать для каждого файла» недоступна в графическом \
+             интерфейсе. Выберите «Переименовать старый в .old» (безопасный \
+             вариант) или другую явную стратегию, либо используйте CLI, где \
+             есть интерактивный вопрос в терминале."
+                .to_string(),
+        );
+    }
+    if !archive.is_file() {
+        return Err("Укажите существующий файл архива (.rmm).".to_string());
+    }
+    if target_root.as_os_str().is_empty() {
+        return Err("Укажите каталог восстановления.".to_string());
+    }
+
+    Ok(RestoreFormValues {
+        archive,
+        target_root,
+        passphrase,
+        strategy,
+        verify_hash: verify_check.is_active(),
+        dry_run: dry_check.is_active(),
+        install_packages: packages_check.is_active(),
+        configure_printers: printers_check.is_active(),
+        apply_system_settings: settings_check.is_active(),
+    })
+}
+
+/// Собрать конфигурацию мастера для восстановления архива.
+fn restore_wizard_config(
+    values: RestoreFormValues,
+    cancel: crate::cancel::CancelToken,
+) -> WizardConfig {
+    let source = values
+        .archive
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let mut wizard_config = WizardConfig::new(MigrationMode::Restore, source);
+    wizard_config.target_home = values.target_root;
+    wizard_config.archive_path = Some(values.archive);
+    wizard_config.components = ComponentType::all_components();
+    wizard_config.passphrase = values.passphrase;
+    wizard_config.conflict_strategy = values.strategy;
+    wizard_config.interactive_conflicts = false;
+    wizard_config.verify = values.verify_hash;
+    wizard_config.dry_run = values.dry_run;
+    wizard_config.install_packages = values.install_packages;
+    wizard_config.configure_printers = values.configure_printers;
+    wizard_config.apply_system_settings = values.apply_system_settings;
+    wizard_config.app_rules = crate::applications::load_effective_rules();
+    wizard_config.database_path = config::load_config().ok().map(|cfg| cfg.database_path);
+    wizard_config.cancel = Some(cancel);
+    wizard_config
+}
+
+/// Прочитать манифест и показать план восстановления до записи файлов (§8).
+fn restore_preview_summary(
+    archive: &std::path::Path,
+    target: &std::path::Path,
+    passphrase: Option<&str>,
+) -> Result<String> {
+    let manifest = ArchiveManager::read_manifest(archive, passphrase)?;
+    let conflicts = manifest
+        .files
+        .iter()
+        .filter(|file| target.join(&file.relative_path).exists())
+        .count();
+    let mut lines = vec![
+        format!(
+            "В архиве: {} файлов, {}",
+            manifest.total_files,
+            human_bytes::human_bytes(manifest.total_size as f64)
+        ),
+        format!("Конфликтов в выбранном каталоге: {}", conflicts),
+        format!("Метаданные: {}", manifest.metadata.summary()),
+    ];
+    if !manifest.metadata.packages.is_empty() {
+        lines.push(format!(
+            "Пакеты: {} (устанавливаются только с явным согласием)",
+            manifest.metadata.packages.len()
+        ));
+    }
+    if !manifest.metadata.printers.is_empty() {
+        lines.push(format!(
+            "Принтеры: {} (настраиваются только с явным согласием)",
+            manifest.metadata.printers.len()
+        ));
+    }
+    if !manifest.metadata.warnings.is_empty() {
+        lines.push("Предупреждения сбора метаданных:".to_string());
+        lines.extend(manifest.metadata.warnings.iter().take(10).cloned());
+    }
+    if conflicts > 0 {
+        lines.push(
+            "По умолчанию выбран безопасный вариант: существующий файл \
+             переименовывается в .old."
+                .to_string(),
+        );
+    }
+    Ok(lines.join("\n"))
 }
 
 /// Страница восстановления профиля из архива (§10).
@@ -804,7 +1328,8 @@ fn restore_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     form.add(&entry_row("Пароль шифрования (если есть)", &pass_widget));
 
     let strategy_drop = gtk::DropDown::from_strings(&STRATEGY_LABELS);
-    strategy_drop.set_selected(0);
+    // ask в GUI не поддерживается: безопасный default — rename (.old).
+    strategy_drop.set_selected(DEFAULT_STRATEGY_INDEX);
     form.add(&entry_row("Стратегия конфликтов", &strategy_drop));
 
     content.append(&form);
@@ -833,9 +1358,58 @@ fn restore_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
 
     content.append(&options_group);
 
+    let system_group = adw::PreferencesGroup::builder()
+        .title("Действия с системой (только по явному согласию)")
+        .description(
+            "Пакеты и принтеры устанавливаются через migration-master-helper и pkexec. \
+             dconf и crontab применяются от имени пользователя.",
+        )
+        .build();
+
+    let packages_row = adw::ActionRow::builder()
+        .title("Установить пользовательские пакеты")
+        .subtitle("Только отсутствующие в системе; требует прав администратора")
+        .build();
+    let packages_check = gtk::CheckButton::new();
+    packages_check.set_valign(gtk::Align::Center);
+    packages_row.add_suffix(&packages_check);
+    packages_row.set_activatable_widget(Some(&packages_check));
+    system_group.add(&packages_row);
+
+    let printers_row = adw::ActionRow::builder()
+        .title("Настроить принтеры")
+        .subtitle("lpadmin через helper; требует прав администратора")
+        .build();
+    let printers_check = gtk::CheckButton::new();
+    printers_check.set_valign(gtk::Align::Center);
+    printers_row.add_suffix(&printers_check);
+    printers_row.set_activatable_widget(Some(&printers_check));
+    system_group.add(&printers_row);
+
+    let settings_row = adw::ActionRow::builder()
+        .title("Применить dconf и crontab")
+        .subtitle(
+            "Пользовательские настройки; dconf также применяется автоматически без этого флажка",
+        )
+        .build();
+    let settings_check = gtk::CheckButton::new();
+    settings_check.set_valign(gtk::Align::Center);
+    settings_row.add_suffix(&settings_check);
+    settings_row.set_activatable_widget(Some(&settings_check));
+    system_group.add(&settings_row);
+
+    content.append(&system_group);
+
+    let preview_button = gtk::Button::with_label("Проверить архив");
     let run_button = gtk::Button::with_label("Восстановить");
     run_button.add_css_class("suggested-action");
-    content.append(&run_button);
+    let cancel_slot = new_cancel_slot();
+    let cancel_btn = cancel_button(&cancel_slot);
+    let buttons = gtk::Box::new(Orientation::Horizontal, 8);
+    buttons.append(&preview_button);
+    buttons.append(&run_button);
+    buttons.append(&cancel_btn);
+    content.append(&buttons);
 
     let progress = gtk::ProgressBar::new();
     progress.set_show_text(true);
@@ -848,7 +1422,10 @@ fn restore_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
 
     bind_restore_action(
         window,
+        &preview_button,
         &run_button,
+        &cancel_btn,
+        &cancel_slot,
         &progress,
         &status,
         &archive_entry,
@@ -857,6 +1434,9 @@ fn restore_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
         &strategy_drop,
         &verify_check,
         &dry_check,
+        &packages_check,
+        &printers_check,
+        &settings_check,
     );
 
     page_frame("Восстановить из архива", &content, nav, false)
@@ -866,7 +1446,10 @@ fn restore_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
 #[allow(clippy::too_many_arguments)]
 fn bind_restore_action(
     window: &adw::ApplicationWindow,
+    preview_button: &gtk::Button,
     run_button: &gtk::Button,
+    cancel_btn: &gtk::Button,
+    cancel_slot: &CancelSlot,
     progress: &gtk::ProgressBar,
     status: &gtk::Label,
     archive_entry: &gtk::Entry,
@@ -875,9 +1458,14 @@ fn bind_restore_action(
     strategy_drop: &gtk::DropDown,
     verify_check: &gtk::CheckButton,
     dry_check: &gtk::CheckButton,
+    packages_check: &gtk::CheckButton,
+    printers_check: &gtk::CheckButton,
+    settings_check: &gtk::CheckButton,
 ) {
     let window = (*window).clone();
-    let run_button = (*run_button).clone();
+    let preview_widget = (*preview_button).clone();
+    let run_widget = (*run_button).clone();
+    let cancel_widget = (*cancel_btn).clone();
     let progress = (*progress).clone();
     let status = (*status).clone();
     let archive_entry = (*archive_entry).clone();
@@ -886,78 +1474,142 @@ fn bind_restore_action(
     let strategy_drop = (*strategy_drop).clone();
     let verify_check = (*verify_check).clone();
     let dry_check = (*dry_check).clone();
+    let packages_check = (*packages_check).clone();
+    let printers_check = (*printers_check).clone();
+    let settings_check = (*settings_check).clone();
 
-    let button = run_button.clone();
-
-    run_button.connect_clicked(move |_| {
-        let archive = expand_tilde(PathBuf::from(archive_entry.text().to_string()));
-        let target_root = expand_tilde(PathBuf::from(target_entry.text().to_string()));
-        let passphrase = {
-            let text = pass_entry.text().to_string();
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
+    let slot_preview = Arc::clone(cancel_slot);
+    let window_preview = window.clone();
+    let preview_widget_preview = preview_widget.clone();
+    let run_widget_preview = run_widget.clone();
+    let cancel_widget_preview = cancel_widget.clone();
+    let progress_preview = progress.clone();
+    let status_preview = status.clone();
+    let archive_preview = archive_entry.clone();
+    let target_preview = target_entry.clone();
+    let pass_preview = pass_entry.clone();
+    let strategy_preview = strategy_drop.clone();
+    let verify_preview = verify_check.clone();
+    let dry_preview = dry_check.clone();
+    let packages_preview = packages_check.clone();
+    let printers_preview = printers_check.clone();
+    let settings_preview = settings_check.clone();
+    preview_widget.connect_clicked(move |_| {
+        let values = match read_restore_form(
+            &archive_preview,
+            &target_preview,
+            &pass_preview,
+            &strategy_preview,
+            &verify_preview,
+            &dry_preview,
+            &packages_preview,
+            &printers_preview,
+            &settings_preview,
+        ) {
+            Ok(values) => values,
+            Err(message) => {
+                show_message(&window_preview, "Проверьте параметры", &message);
+                return;
             }
         };
-        let strategy = conflict_strategy(strategy_drop.selected());
-        let verify_hash = verify_check.is_active();
-        let dry_run = dry_check.is_active();
 
-        if !archive.is_file() {
-            show_message(
-                &window,
-                "Проверьте параметры",
-                "Укажите существующий файл архива (.rmm).",
-            );
-            return;
-        }
-        if target_root.as_os_str().is_empty() {
-            show_message(
-                &window,
-                "Проверьте параметры",
-                "Укажите каталог восстановления.",
-            );
-            return;
-        }
-
-        button.set_sensitive(false);
-        status.set_text("Восстановление…");
-        let window_done = window.clone();
-        let button_done = button.clone();
+        preview_widget_preview.set_sensitive(false);
+        run_widget_preview.set_sensitive(false);
+        cancel_widget_preview.set_sensitive(false);
+        status_preview.set_text("Чтение манифеста…");
+        let window_done = window_preview.clone();
+        let preview_done = preview_widget_preview.clone();
+        let run_done = run_widget_preview.clone();
+        let slot_done = Arc::clone(&slot_preview);
         spawn_task(
-            &progress,
-            &status,
-            move |observer| {
-                let options = RestoreOptions {
-                    archive,
-                    passphrase,
-                    target_root,
-                    components: None,
-                    strategy,
-                    verify_hash,
-                    dry_run,
-                    cancel: Some(crate::cancel::global()),
-                };
-                let result = ArchiveManager::restore(&options, observer)?;
-                if !result.is_success() {
-                    return Err(MigrationError::Conflict(format!(
-                        "восстановление завершено с ошибками: {}",
-                        result.errors.len()
-                    )));
-                }
-                Ok(format!(
-                    "Восстановлено файлов: {} ({}); пропущено: {}; конфликтов: {}",
-                    result.restored_files,
-                    human_bytes::human_bytes(result.restored_bytes as f64),
-                    result.skipped_files,
-                    result.conflicts.len()
-                ))
+            &progress_preview,
+            &status_preview,
+            move |_observer| {
+                restore_preview_summary(
+                    &values.archive,
+                    &values.target_root,
+                    values.passphrase.as_deref(),
+                )
             },
             move |success, summary| {
-                button_done.set_sensitive(true);
+                preview_done.set_sensitive(true);
+                run_done.set_sensitive(true);
+                finish_operation(&slot_done);
                 let heading = if success {
-                    "Готово"
+                    "План восстановления"
+                } else {
+                    "Ошибка проверки архива"
+                };
+                show_message(&window_done, heading, summary);
+            },
+        );
+    });
+
+    let slot_run = Arc::clone(cancel_slot);
+    let window_run = window.clone();
+    let preview_widget_run = preview_widget.clone();
+    let run_widget_run = run_widget.clone();
+    let cancel_widget_run = cancel_widget.clone();
+    let progress_run = progress.clone();
+    let status_run = status.clone();
+    let archive_run = archive_entry.clone();
+    let target_run = target_entry.clone();
+    let pass_run = pass_entry.clone();
+    let strategy_run = strategy_drop.clone();
+    let verify_run = verify_check.clone();
+    let dry_run_check = dry_check.clone();
+    let packages_run = packages_check.clone();
+    let printers_run = printers_check.clone();
+    let settings_run = settings_check.clone();
+    run_widget.connect_clicked(move |_| {
+        let values = match read_restore_form(
+            &archive_run,
+            &target_run,
+            &pass_run,
+            &strategy_run,
+            &verify_run,
+            &dry_run_check,
+            &packages_run,
+            &printers_run,
+            &settings_run,
+        ) {
+            Ok(values) => values,
+            Err(message) => {
+                show_message(&window_run, "Проверьте параметры", &message);
+                return;
+            }
+        };
+
+        preview_widget_run.set_sensitive(false);
+        run_widget_run.set_sensitive(false);
+        cancel_widget_run.set_sensitive(true);
+        let token = begin_operation(&slot_run);
+        status_run.set_text("Восстановление…");
+        let window_done = window_run.clone();
+        let preview_done = preview_widget_run.clone();
+        let run_done = run_widget_run.clone();
+        let cancel_done = cancel_widget_run.clone();
+        let slot_done = Arc::clone(&slot_run);
+        spawn_task(
+            &progress_run,
+            &status_run,
+            move |observer| {
+                let mut wizard = MigrationWizard::new(restore_wizard_config(values, token));
+                let report = wizard.run(observer)?;
+                let summary = operation_summary(&report, wizard.report_paths());
+                if report.errors.is_empty() && !report.cancelled {
+                    Ok(summary)
+                } else {
+                    Err(MigrationError::Conflict(summary))
+                }
+            },
+            move |success, summary| {
+                preview_done.set_sensitive(true);
+                run_done.set_sensitive(true);
+                cancel_done.set_sensitive(false);
+                finish_operation(&slot_done);
+                let heading = if success {
+                    "Восстановление завершено"
                 } else {
                     "Операция не завершена"
                 };
@@ -1014,11 +1666,35 @@ fn ssh_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     dry_row.add_suffix(&dry_check);
     dry_row.set_activatable_widget(Some(&dry_check));
     options_group.add(&dry_row);
+
+    let private_keys_row = adw::ActionRow::builder()
+        .title("Переносить приватные SSH-ключи")
+        .subtitle("Опасно: ключи передаются на удалённый хост по сети")
+        .build();
+    let private_keys_check = gtk::CheckButton::new();
+    private_keys_check.set_valign(gtk::Align::Center);
+    private_keys_row.add_suffix(&private_keys_check);
+    private_keys_row.set_activatable_widget(Some(&private_keys_check));
+    options_group.add(&private_keys_row);
+
+    let authorized_keys_row = adw::ActionRow::builder()
+        .title("Переносить authorized_keys")
+        .build();
+    let authorized_keys_check = gtk::CheckButton::new();
+    authorized_keys_check.set_valign(gtk::Align::Center);
+    authorized_keys_row.add_suffix(&authorized_keys_check);
+    authorized_keys_row.set_activatable_widget(Some(&authorized_keys_check));
+    options_group.add(&authorized_keys_row);
     content.append(&options_group);
 
     let run_button = gtk::Button::with_label("Начать перенос");
     run_button.add_css_class("suggested-action");
-    content.append(&run_button);
+    let cancel_slot = new_cancel_slot();
+    let cancel_btn = cancel_button(&cancel_slot);
+    let buttons = gtk::Box::new(Orientation::Horizontal, 8);
+    buttons.append(&run_button);
+    buttons.append(&cancel_btn);
+    content.append(&buttons);
 
     let progress = gtk::ProgressBar::new();
     progress.set_show_text(true);
@@ -1032,37 +1708,48 @@ fn ssh_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     bind_ssh_action(
         window,
         &run_button,
+        &cancel_btn,
+        &cancel_slot,
         &progress,
         &status,
         &target_entry,
         &remote_entry,
         &dry_check,
+        &private_keys_check,
+        &authorized_keys_check,
     );
 
     page_frame("Перенос по SSH", &content, nav, false)
 }
 
 /// Подключить обработчик кнопки «Начать перенос» (SSH).
+#[allow(clippy::too_many_arguments)]
 fn bind_ssh_action(
     window: &adw::ApplicationWindow,
     run_button: &gtk::Button,
+    cancel_btn: &gtk::Button,
+    cancel_slot: &CancelSlot,
     progress: &gtk::ProgressBar,
     status: &gtk::Label,
     target_entry: &gtk::Entry,
     remote_entry: &gtk::Entry,
     dry_check: &gtk::CheckButton,
+    private_keys_check: &gtk::CheckButton,
+    authorized_keys_check: &gtk::CheckButton,
 ) {
     let window = (*window).clone();
-    let run_button = (*run_button).clone();
+    let run_widget = (*run_button).clone();
+    let cancel_widget = (*cancel_btn).clone();
+    let slot = Arc::clone(cancel_slot);
     let progress = (*progress).clone();
     let status = (*status).clone();
     let target_entry = (*target_entry).clone();
     let remote_entry = (*remote_entry).clone();
     let dry_check = (*dry_check).clone();
+    let private_keys_check = (*private_keys_check).clone();
+    let authorized_keys_check = (*authorized_keys_check).clone();
 
-    let button = run_button.clone();
-
-    run_button.connect_clicked(move |_| {
+    run_widget.connect_clicked(move |_| {
         let Some((user, host, port)) = parse_ssh_target(&target_entry.text()) else {
             show_message(
                 &window,
@@ -1091,34 +1778,42 @@ fn bind_ssh_action(
             known_hosts_file: None,
         };
 
+        let token = begin_operation(&slot);
         let mut wizard_config = WizardConfig::new(MigrationMode::SshDirect, default_home());
         wizard_config.target_home = PathBuf::from(remote_home);
         wizard_config.components = ComponentType::default_components();
         wizard_config.app_rules = crate::applications::load_effective_rules();
         wizard_config.ssh = Some(ssh);
         wizard_config.dry_run = dry_check.is_active();
-        wizard_config.cancel = Some(crate::cancel::global());
+        wizard_config.include_private_ssh_keys = private_keys_check.is_active();
+        wizard_config.include_authorized_keys = authorized_keys_check.is_active();
+        wizard_config.cancel = Some(token);
         wizard_config.database_path = config::load_config().ok().map(|cfg| cfg.database_path);
 
-        button.set_sensitive(false);
+        run_widget.set_sensitive(false);
+        cancel_widget.set_sensitive(true);
         status.set_text("Подключение и передача…");
         let window_done = window.clone();
-        let button_done = button.clone();
+        let button_done = run_widget.clone();
+        let cancel_done = cancel_widget.clone();
+        let slot_done = Arc::clone(&slot);
         spawn_task(
             &progress,
             &status,
             move |observer| {
                 let mut wizard = MigrationWizard::new(wizard_config);
                 let report = wizard.run(observer)?;
-                Ok(format!(
-                    "Передача: файлов {}, {}; статус: {}",
-                    report.stats.files_copied,
-                    human_bytes::human_bytes(report.stats.bytes_copied as f64),
-                    report.status()
-                ))
+                let summary = operation_summary(&report, wizard.report_paths());
+                if report.errors.is_empty() && !report.cancelled {
+                    Ok(summary)
+                } else {
+                    Err(MigrationError::Conflict(summary))
+                }
             },
             move |success, summary| {
                 button_done.set_sensitive(true);
+                cancel_done.set_sensitive(false);
+                finish_operation(&slot_done);
                 let heading = if success {
                     "Готово"
                 } else {
@@ -1253,29 +1948,6 @@ fn settings_page(nav: &Navigator) -> gtk::Box {
     content.append(&about);
 
     page_frame("Настройки и диагностика", &content, nav, false)
-}
-
-/// Собрать элементы профиля для упаковки (как в CLI-команде `create`).
-///
-/// `exclude` — файл, который не включается в архив (сам архив, если он лежит
-/// внутри сканируемого каталога: иначе прошлый архив попадает в новый).
-fn scan_items(
-    home: &std::path::Path,
-    components: &[ComponentType],
-    exclude: Option<&std::path::Path>,
-) -> Result<Vec<TransferItem>> {
-    let config = WizardConfig {
-        components: components.to_vec(),
-        app_rules: crate::applications::load_effective_rules(),
-        ..WizardConfig::new(MigrationMode::LocalArchive, home)
-    };
-    let mut wizard = MigrationWizard::new(config);
-    let inventory = wizard.scan()?.clone();
-    let mut items = inventory.items;
-    if let Some(exclude) = exclude {
-        items.retain(|item| item.source != exclude);
-    }
-    Ok(items)
 }
 
 /// Состояние фоновой операции, публикуемое для GTK-потока.

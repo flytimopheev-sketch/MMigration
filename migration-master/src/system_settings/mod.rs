@@ -80,20 +80,120 @@ impl SystemSettings {
             std::fs::create_dir_all(parent)?;
         }
 
-        let output = std::process::Command::new("dconf")
+        if let Some(dump) = Self::dump_dconf_to_string()? {
+            std::fs::write(destination, dump)?;
+        }
+        Ok(())
+    }
+
+    /// Выгрузить dconf в строку (для манифеста архива).
+    ///
+    /// `Ok(None)` означает, что `dconf` недоступен: это не ошибка, настройки
+    /// просто не переносятся.
+    pub fn dump_dconf_to_string() -> Result<Option<String>> {
+        let output = match std::process::Command::new("dconf")
             .args(["dump", "/"])
             .stdin(std::process::Stdio::null())
-            .output();
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => return Ok(None),
+        };
 
-        match output {
-            Ok(output) if output.status.success() => {
-                std::fs::write(destination, &output.stdout)?;
-            }
-            // dconf отсутствует — это не ошибка, настройки просто не переносятся
-            _ => {}
+        if output.status.success() {
+            Ok(Some(String::from_utf8_lossy(&output.stdout).to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Применить dconf-дамп к текущей пользовательской сессии.
+    ///
+    /// Это пользовательская операция, root не требуется. Пустой дамп
+    /// пропускается, чтобы не сбрасывать настройки.
+    pub fn apply_dconf_dump(dump: &str) -> Result<()> {
+        use std::io::Write;
+
+        if dump.trim().is_empty() {
+            return Ok(());
         }
 
+        let mut child = std::process::Command::new("dconf")
+            .args(["load", "/"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|_| crate::error::MigrationError::missing_tool("dconf"))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(dump.as_bytes())?;
+        }
+        let output = child.wait_with_output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(crate::error::MigrationError::Command {
+                command: "dconf".to_string(),
+                message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            })
+        }
+    }
+
+    /// Обновить кэш шрифтов после восстановления (`fc-cache -f`).
+    pub fn refresh_font_cache() -> Result<()> {
+        run_tool("fc-cache", &["-f"])
+    }
+
+    /// Обновить базу `.desktop`-файлов пользователя.
+    pub fn refresh_desktop_database(home: &Path) -> Result<()> {
+        let applications = home.join(".local/share/applications");
+        if applications.is_dir() {
+            let path = applications.to_string_lossy().to_string();
+            run_tool("update-desktop-database", &[path.as_str()])?;
+        }
         Ok(())
+    }
+
+    /// Перечитать пользовательские systemd-юниты.
+    pub fn reload_user_systemd() -> Result<()> {
+        run_tool("systemctl", &["--user", "daemon-reload"])
+    }
+
+    /// Список включённых пользовательских юнитов (для отчёта).
+    pub fn enabled_user_units() -> Vec<String> {
+        let output = std::process::Command::new("systemctl")
+            .args([
+                "--user",
+                "list-unit-files",
+                "--state=enabled",
+                "--no-legend",
+            ])
+            .stdin(std::process::Stdio::null())
+            .output();
+        match output {
+            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| line.split_whitespace().next())
+                .map(str::to_string)
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+fn run_tool(tool: &str, args: &[&str]) -> Result<()> {
+    let output = std::process::Command::new(tool)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|_| crate::error::MigrationError::missing_tool(tool))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(crate::error::MigrationError::Command {
+            command: tool.to_string(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
     }
 }
 
