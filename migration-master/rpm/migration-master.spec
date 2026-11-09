@@ -1,5 +1,5 @@
 Name:           migration-master
-Version:        0.1.5
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Мастер миграции пользователя для РЕД ОС Linux
 License:        GPL-3.0
@@ -177,6 +177,16 @@ fi
 
 %files
 %doc README.md
+%doc docs/ARCHITECTURE.md
+%doc docs/BACKUP.md
+%doc docs/BUILD_RPM.md
+%doc docs/HOST_IMAGE.md
+%doc docs/IMPROVEMENTS.md
+%doc docs/INSTALL.md
+%doc docs/RECOVERY.md
+%doc docs/SECURITY.md
+%doc docs/TROUBLESHOOTING.md
+%doc docs/USER_GUIDE_RU.md
 %{_bindir}/migration-master
 %{_bindir}/migration-master-helper
 %{_datadir}/applications/migration-master.desktop
@@ -188,6 +198,20 @@ fi
 %{_mandir}/man1/migration-master.1.gz
 
 %changelog
+* Mon Nov 09 2026 Migration Master Team <team@redos.local> - 0.2.0-1
+- Пакеты, принтеры, dconf и cron сохраняются в manifest и применяются через
+  helper/PolicyKit либо от имени пользователя только по явному согласию
+- Приватные SSH-ключи и authorized_keys включаются явными флагами CLI/GUI
+- CLI: --ask-passphrase, --passphrase-file, --install-packages,
+  --configure-printers, --apply-system-settings, --no-backup
+- CLI restore создаёт резервную копию автоматически
+- Единый сканер scan/create с путями правил приложений (Firefox, Thunderbird,
+  Git, shell); XDG-каталоги читаются из user-dirs.dirs
+- GUI: предпросмотр, отмена, подтверждение пароля и приватных ключей,
+  итоговый экран с отчётом и кнопкой «Открыть отчёт»
+- ask спрашивает в TTY и возвращает ошибку без TTY; в GUI безопасный rename
+- Обновлены README, руководства и man-страница; новые документы в %doc
+
 * Mon Oct 26 2026 Migration Master Team <team@redos.local> - 0.1.5-1
 - Повторный запуск мастера (ярлык в меню, повторная команда) показывает уже
   открытое окно, а не создаёт второе

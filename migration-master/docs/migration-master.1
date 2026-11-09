@@ -1,4 +1,4 @@
-.TH MIGRATION-MASTER 1 "2026-11-06" "Migration Master 0.1.5" "Команды пользователя"
+.TH MIGRATION-MASTER 1 "2026-11-09" "Migration Master 0.2.0" "Команды пользователя"
 
 .SH ИМЯ
 migration-master \- Мастер миграции пользователя для РЕД ОС Linux
@@ -37,7 +37,15 @@ Migration Master - это приложение для безопасного п�
 .br
 \fB\-\-home\fR           Домашний каталог источника (по умолчанию текущий)
 .br
-\fB\-\-passphrase\fR     Пароль шифрования (не сохраняется)
+\fB\-\-ask\-passphrase\fR  Интерактивно запросить пароль (предпочтительно)
+.br
+\fB\-\-passphrase\-file\fR \fIФАЙЛ\fR  Прочитать пароль из файла
+.br
+\fB\-\-passphrase\fR     Пароль аргументом (виден в ps и истории)
+.br
+\fB\-\-include\-private\-ssh\-keys\fR  Перенести приватные SSH-ключи
+.br
+\fB\-\-include\-authorized\-keys\fR   Перенести authorized_keys
 .br
 \fB\-\-compression\fR Уровень сжатия zstd, 0–22 [по умолчанию 3]
 .br
@@ -46,10 +54,14 @@ Migration Master - это приложение для безопасного п�
 
 .TP
 .B inspect \fIАРХИВ\fR
-Просмотр содержимого архива без восстановления
+Просмотр содержимого архива и метаданных без восстановления
 .RS
 .br
-\fB\-\-passphrase\fR     Пароль шифрования
+\fB\-\-ask\-passphrase\fR  Интерактивно запросить пароль
+.br
+\fB\-\-passphrase\-file\fR \fIФАЙЛ\fR  Прочитать пароль из файла
+.br
+\fB\-\-passphrase\fR     Пароль аргументом
 .RE
 
 .TP
@@ -61,13 +73,25 @@ Migration Master - это приложение для безопасного п�
 .br
 \fB\-\-components\fR     Компоненты для восстановления [по умолчанию all]
 .br
+\fB\-\-ask\-passphrase\fR  Интерактивно запросить пароль
+.br
+\fB\-\-passphrase\-file\fR \fIФАЙЛ\fR  Прочитать пароль из файла
+.br
 \fB\-\-passphrase\fR     Пароль для расшифрования
 .br
 \fB\-\-strategy\fR       Стратегия конфликтов:
 skip|replace|newer|keep\-both|rename\-old|ask [по умолчанию ask].
-ask в 0.1.5 без интерактивного обработчика работает как skip.
+ask спрашивает только в интерактивном TTY, иначе возвращает ошибку.
 .br
 \fB\-\-verify\fR         Проверять хеши после восстановления [по умолчанию true]
+.br
+\fB\-\-install\-packages\fR  Установить пользовательские пакеты через helper/polkit
+.br
+\fB\-\-configure\-printers\fR  Настроить принтеры через helper/polkit
+.br
+\fB\-\-apply\-system\-settings\fR  Применить dconf и crontab от имени пользователя
+.br
+\fB\-\-no\-backup\fR       Не создавать резервную копию перед восстановлением
 .br
 \fB\-\-dry\-run\fR        Dry\-run (без внесения изменений)
 .RE
@@ -76,6 +100,10 @@ ask в 0.1.5 без интерактивного обработчика рабо
 .B verify \fIАРХИВ\fR
 Проверка целостности архива и хешей SHA\-256
 .RS
+.br
+\fB\-\-ask\-passphrase\fR  Интерактивно запросить пароль
+.br
+\fB\-\-passphrase\-file\fR \fIФАЙЛ\fR  Прочитать пароль из файла
 .br
 \fB\-\-passphrase\fR     Пароль шифрования
 .br
@@ -96,6 +124,12 @@ ask в 0.1.5 без интерактивного обработчика рабо
 \fB\-\-components\fR     Компоненты [по умолчанию default]
 .br
 \fB\-\-identity\fR  Файл приватного ключа SSH
+.br
+\fB\-\-known\-hosts\fR \fIФАЙЛ\fR  Файл known_hosts для проверки отпечатка
+.br
+\fB\-\-include\-private\-ssh\-keys\fR  Передавать приватные SSH-ключи
+.br
+\fB\-\-include\-authorized\-keys\fR   Передавать authorized_keys
 .br
 \fB\-\-dry\-run\fR       Проверка соединения и плана без передачи
 .RE
@@ -172,15 +206,19 @@ ask в 0.1.5 без интерактивного обработчика рабо
 # Сканирование профиля
 migration-master scan
 
-# Создание зашифрованного архива
-migration-master create --output backup.rmm --passphrase 'секрет'
+# Создание зашифрованного архива (пароль вводится интерактивно)
+migration-master create --output backup.rmm --ask-passphrase
 
 # Проверка целостности архива
-migration-master verify backup.rmm --passphrase 'секрет'
+migration-master verify backup.rmm --ask-passphrase
 
 # Восстановление из архива (сначала обязательно --dry-run)
-migration-master restore backup.rmm --target /home/user --dry-run --passphrase 'секрет'
-migration-master restore backup.rmm --target /home/user --strategy rename --passphrase 'секрет'
+migration-master restore backup.rmm --target /home/user --dry-run --ask-passphrase
+migration-master restore backup.rmm --target /home/user --strategy rename --ask-passphrase
+
+# Установка пакетов и настройка принтеров через helper по явному согласию
+migration-master restore backup.rmm --target /home/user \
+  --install-packages --configure-printers --apply-system-settings
 
 # Прямая миграция по SSH
 migration-master migrate-ssh user@192.168.1.100 --dry-run
@@ -198,19 +236,26 @@ migration-master gui
 
 .SH БЕЗОПАСНОСТЬ
 Приложение использует age для шифрования архивов и SHA-256 для проверки целостности.
-Пароль архива нигде не сохраняется и не попадает в журналы, историю и отчёты,
-но в CLI он виден в списке процессов и остаётся в истории оболочки.
-Приватные SSH-ключи и authorized_keys в 0.1.5 не переносятся: переключателя
-в CLI/GUI нет, их копируют вручную и выставляют права 0600.
+Пароль архива нигде не сохраняется и не попадает в журналы, историю и отчёты.
+Способы \fB\-\-ask\-passphrase\fR и \fB\-\-passphrase\-file\fR не оставляют
+пароль в списке процессов и истории оболочки.
+Приватные SSH-ключи и authorized_keys переносятся только при явных флагах
+\fB\-\-include\-private\-ssh\-keys\fR и \fB\-\-include\-authorized\-keys\fR;
+после восстановления права выставляются автоматически (0700/0600).
 Все пути из архива проверяются на выход за пределы целевого каталога
 (path traversal). Помощник migration-master-helper с белым списком PolicyKit
-предусмотрен, но в 0.1.5 из GUI/CLI не вызывается.
+вызывается через pkexec только при явных \fB\-\-install\-packages\fR,
+\fB\-\-configure\-printers\fR; GUI остаётся запущенным от пользователя.
 
 .SH ОГРАНИЧЕНИЯ
-Стратегия ask в 0.1.5 фактически работает как skip: интерактивного диалога нет.
-Компоненты packages, printers, system_settings и cron_jobs — заготовки;
-Firefox, Thunderbird, Git и shell-конфиги автоматически не переносятся.
-CLI restore не создаёт автоматическую резервную копию (это делает GUI-мастер).
+Стратегия ask спрашивает только в интерактивном TTY; в GUI она заблокирована,
+по умолчанию выбран безопасный rename.
+Компоненты packages, printers, system_settings и cron_jobs сохраняются в
+manifest; установка пакетов и принтеры требуют явного согласия и helper,
+dconf/cron применяются от имени пользователя.
+Firefox, Thunderbird, Git и shell-конфиги попадают в архив через правила
+приложений.
+CLI restore создаёт резервную копию автоматически; отключается \fB\-\-no\-backup\fR.
 Архив не заменяет полный образ диска: /etc, пакеты, другие пользователи и
 загрузчик требуют root и других инструментов. Подробнее — HOST_IMAGE.md и
 IMPROVEMENTS.md в каталоге документации.

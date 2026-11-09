@@ -11,17 +11,25 @@
 ## Возможности
 
 - **Создание зашифрованного архива** профиля пользователя
-- **Прямая миграция по SSH** между компьютерами
-- **Восстановление из архива** с выбором компонентов
-- **Перенос файлов и настроек** из `~/.config` и `~/.local/share`; Firefox,
-  Thunderbird, Git и shell-конфиги требуют отдельного архива (см. HOST_IMAGE.md)
-- **Перенос SSH-ключей** с соблюдением безопасности (публичные ключи; приватные
-  и `authorized_keys` — пока вручную)
-- **Список принтеров CUPS** и пользовательский `~/.cups`; авто-восстановление
-  принтеров пока не реализовано
-- **Список пакетов RPM** через `list-packages` (установка вручную)
+- **Прямая миграция по SSH** между компьютерами (`scp` или `rsync --partial`)
+- **Восстановление из архива** с выбором компонентов, предпросмотром,
+  отменой, автоматическим backup и отчётом
+- **Перенос файлов и настроек** из `~/.config` и `~/.local/share` с учётом
+  правил приложений: Firefox, Thunderbird, Git, shell-конфиги и другие пути
+  добавляются в скан автоматически
+- **Перенос SSH-ключей**: публичные ключи всегда, приватные ключи и
+  `authorized_keys` — только при явном флаге/галочке, с проверкой прав `0700`
+  и `0600`
+- **Принтеры CUPS**: имя, модель, URI и принтер по умолчанию сохраняются в
+  manifest; восстановление через `lpadmin`/`cupsenable`/`cupsaccept` и
+  помощник PolicyKit
+- **Пакеты**: список явно установленных пользователем пакетов сохраняется в
+  manifest, при восстановлении показывается diff и установка идёт через
+  помощник только после подтверждения
+- **dconf и cron**: дамп dconf и crontab сохраняются и применяются от имени
+  пользователя после восстановления
 - **Проверка контрольных сумм** файлов
-- **Журналирование операций** в SQLite
+- **Журналирование операций** в SQLite и отчёты JSON/HTML/TXT
 
 ## Статус реализации
 
@@ -33,22 +41,23 @@
   не делает резервных копий);
 - частичный `config.toml` допустим: недостающие поля берутся из значений
   по умолчанию, битый TOML по-прежнему возвращает ошибку;
-- SSH-политика ключей, стратегии конфликтов (интерактивный `ask` пока не
-  реализован), отмена операций (Ctrl+C), SQLite-история, отчёты
-  (JSON/HTML/TXT/PDF), резервные копии в GUI;
+- SSH-политика ключей, стратегии конфликтов: интерактивный `ask` в TTY и
+  явная ошибка без TTY, безопасный `rename` по умолчанию в GUI, отмена
+  операций (Ctrl+C), SQLite-история, отчёты (JSON/HTML/TXT), резервные копии
+  в GUI и CLI;
+- единый сканер для `scan` и `create`, включая пути правил приложений и
+  XDG-каталоги;
+- пакеты, принтеры, dconf и cron: метаданные в manifest, diff, применение
+  через пользователя или помощник PolicyKit;
 - CLI: `scan`, `create`, `inspect`, `verify`, `restore`, `migrate-ssh`, `report`,
   `list-packages`, `list-printers`, `config`, `app-rules`;
 - GUI на GTK4/libadwaita (`migration-master gui`, фича `gui`): главный экран,
-  создание архива, перенос по SSH, восстановление, история и диагностика.
+  создание архива с предпросмотром, перенос по SSH, восстановление с
+  предпросмотром и флагами пакетов/принтеров/dconf+cron, история и диагностика.
 
-В работе:
-
-- добавление путей app rules в скан (Firefox/Thunderbird/Git/shell);
-- пакеты, принтеры, системные настройки и cron (сейчас компоненты-заготовки);
-- интерактивное разрешение конфликтов и экран предпросмотра;
-- вызов polkit-помощника из GUI для системных операций.
-
-Подробный разбор — в [IMPROVEMENTS.md](docs/IMPROVEMENTS.md).
+Осталось необязательное: полноценный диалог конфликтов в GUI, ACL/xattr/
+SELinux/capabilities/hardlinks в архиве и расширенные e2e-тесты. Подробный
+разбор — в [IMPROVEMENTS.md](docs/IMPROVEMENTS.md).
 
 ## Документация
 
@@ -57,7 +66,7 @@
 | [Установка](docs/INSTALL.md) | RPM и сборка из исходников, внешние утилиты |
 | [Руководство пользователя](docs/USER_GUIDE_RU.md) | оба режима миграции, компоненты, конфликты |
 | [Образ хоста без root](docs/HOST_IMAGE.md) | снимок профиля, дополнения, полный образ диска |
-| [План улучшений](docs/IMPROVEMENTS.md) | ограничения 0.1.5 и приоритеты |
+| [План улучшений](docs/IMPROVEMENTS.md) | статус P0/P1 в 0.2.0 и оставшиеся пункты |
 | [Безопасность](docs/SECURITY.md) | модель угроз, шифрование, path traversal, polkit |
 | [Резервное копирование](docs/BACKUP.md) | создание, проверка и откат копий |
 | [Восстановление после ошибки](docs/RECOVERY.md) | откат и разбор сбоев |
@@ -119,10 +128,10 @@ cargo build --features gui --release
 
 ```bash
 # Скачать последний релиз
-gh release download v0.1.5 -p '*.rpm'
+gh release download v0.2.0 -p '*.rpm'
 
 # Установить на РЕД ОС
-sudo dnf install ./migration-master-0.1.5-1.x86_64.rpm
+sudo dnf install ./migration-master-0.2.0-1.x86_64.rpm
 ```
 
 Пакет собирается в CI на Linux (без Docker): workflow
@@ -171,8 +180,13 @@ migration-master scan --home /home/user --components all
 
 # Создание архива профиля
 migration-master create --output profile.rmm
-migration-master create --output profile.rmm --passphrase '...'
+migration-master create --output profile.rmm --ask-passphrase
+migration-master create --output profile.rmm --passphrase-file ~/.rmm-pass
 migration-master create --output profile.rmm --components documents,ssh_keys
+
+# Приватные ключи и authorized_keys — только при явном согласии
+migration-master create --output profile.rmm \
+  --include-private-ssh-keys --include-authorized-keys
 
 # Просмотр содержимого без восстановления
 migration-master inspect profile.rmm
@@ -180,10 +194,13 @@ migration-master inspect profile.rmm
 # Проверка целостности и хешей SHA-256
 migration-master verify profile.rmm
 
-# Восстановление из архива
+# Восстановление из архива (backup создаётся автоматически)
 migration-master restore profile.rmm --target ./restore-test --dry-run
 migration-master restore profile.rmm --target ./restore-test --components documents,ssh_keys
 migration-master restore profile.rmm --target ./restore-test --strategy rename
+migration-master restore profile.rmm --target /home/user \
+  --install-packages --configure-printers --apply-system-settings
+migration-master restore profile.rmm --target /home/user --no-backup
 
 # Список пакетов и принтеров
 migration-master list-packages
@@ -198,8 +215,10 @@ migration-master config reset
 migration-master gui
 ```
 
-> Для зашифрованных архивов передавайте `--passphrase '<пароль>'` командам
-> `inspect`, `verify`, `restore`. Пароль нигде не сохраняется.
+> Для зашифрованных архивов используйте `--ask-passphrase` (интерактивный
+> ввод), `--passphrase-file <файл>` или `--passphrase '<пароль>'` командам
+> `inspect`, `verify`, `restore`. Пароль в аргументах виден в `ps` и истории
+> оболочки, поэтому первые два способа предпочтительнее; нигде не сохраняется.
 
 ### Графический интерфейс
 
@@ -283,7 +302,7 @@ migration-master/
   "source_user": "user",
   "source_uid": 1000,
   "source_gid": 1000,
-  "app_version": "0.1.5",
+  "app_version": "0.2.0",
   "os_info": {
     "name": "РЕД ОС",
     "version": "8.0",
@@ -305,7 +324,24 @@ migration-master/
   "total_size": 1234,
   "total_files": 1,
   "encrypted": true,
-  "compression": "zstd"
+  "compression": "zstd",
+  "metadata": {
+    "packages": [
+      { "name": "firefox", "version": "128.0-1" }
+    ],
+    "printers": [
+      {
+        "name": "Office",
+        "model": "everywhere",
+        "device_uri": "ipp://printer.local/ipp/print",
+        "shared": false,
+        "default": true
+      }
+    ],
+    "dconf": "[org/gnome/desktop/interface]\ncolor-scheme='prefer-dark'\n",
+    "crontab": "0 9 * * 1-5 /home/user/bin/backup.sh\n",
+    "warnings": []
+  }
 }
 ```
 
@@ -316,8 +352,10 @@ migration-master/
 - **SSH**: host key проверяется вручную (используется `accept-new` — TOFU),
   поддерживаются ключи Ed25519
 - **Path traversal защита**: проверка путей при восстановлении
-- **Polkit**: заготовка привилегированного помощника с белым списком;
-  в 0.1.5 не вызывается из GUI
+- **Polkit**: привилегированный помощник `migration-master-helper` с белым
+  списком команд; GUI вызывает его через `pkexec` только для явно
+  подтверждённых установки пакетов и настройки принтеров. Системные файлы
+  (`/etc`) вслепую не копируются
 
 Подробнее — [SECURITY.md](docs/SECURITY.md) и
 [IMPROVEMENTS.md](docs/IMPROVEMENTS.md).

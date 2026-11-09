@@ -2,7 +2,7 @@ name: Rust
 
 on:
   push:
-    branches: [ "main", "release/0.2.0" ]
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
@@ -37,27 +37,7 @@ jobs:
       # --all-features обязателен: без него GUI-код (src/ui/gtk_app.rs) вообще
       # не компилируется и не проверяется — именно так в пакет попала
       # зависимость от API libadwaita 1.4, из-за чего GUI не стартовал.
-      run: |
-        set -o pipefail
-        cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee clippy.log
-    - name: Clippy summary
-      if: failure()
-      working-directory: migration-master
-      run: |
-        {
-          echo '### Clippy failure'
-          echo '```'
-          tail -n 300 clippy.log
-          echo '```'
-        } >> "$GITHUB_STEP_SUMMARY"
-        first=$(grep -n -m1 -E '^error(\[|:)' clippy.log | cut -d: -f1 || true)
-        if [ -n "$first" ]; then
-          body=$(sed -n "${first},$((first+30))p" clippy.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
-          echo "::error title=Clippy output::${body}"
-        else
-          body=$(tail -n 30 clippy.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
-          echo "::error title=Clippy output::${body}"
-        fi
+      run: cargo clippy --all-targets --all-features -- -D warnings
 
     - name: Build (CLI)
       working-directory: migration-master
@@ -107,18 +87,6 @@ jobs:
         set -o pipefail
         MIGRATION_MASTER_GUI_SELFTEST=1 xvfb-run -a dbus-run-session -- \
           ./target/release/migration-master gui 2>&1 | tee gui-selftest.log
-    - name: GUI smoke summary
-      if: failure()
-      working-directory: migration-master
-      run: |
-        {
-          echo '### GUI smoke failure'
-          echo '```'
-          tail -n 300 gui-selftest.log
-          echo '```'
-        } >> "$GITHUB_STEP_SUMMARY"
-        body=$(tail -n 50 gui-selftest.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
-        echo "::error title=GUI smoke output::${body}"
 
   # То же самое, но на libadwaita 1.2 (Debian 12) — как на РЕД ОС 8.
   # Этот джоб ловит несовместимость с целевой платформой: GTK4 4.8 +
@@ -166,15 +134,3 @@ jobs:
         set -o pipefail
         MIGRATION_MASTER_GUI_SELFTEST=1 xvfb-run -a dbus-run-session -- \
           ./target/release/migration-master gui 2>&1 | tee gui-selftest.log
-    - name: GUI smoke summary
-      if: failure()
-      working-directory: migration-master
-      run: |
-        {
-          echo '### GUI smoke failure (Debian 12)'
-          echo '```'
-          tail -n 300 gui-selftest.log
-          echo '```'
-        } >> "$GITHUB_STEP_SUMMARY"
-        body=$(tail -n 50 gui-selftest.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
-        echo "::error title=GUI smoke output (Debian 12)::${body}"

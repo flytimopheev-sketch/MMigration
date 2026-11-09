@@ -38,12 +38,14 @@
 - `ui` - Графический интерфейс GTK4/libadwaita
 - `report` - Генерация отчётов
 
-> **Статус 0.1.5.** `applications`, `printers`, `packages`,
-> `system_settings` и `polkit` реализованы частично: модули и структуры есть,
-> но не все вызовы подключены к основному потоку. Правила приложений сейчас
-> влияют на размеры/исключения, но не добавляют свои пути в скан. Пакеты,
-> принтеры, системные настройки и cron не архивируются автоматически.
-> Подробный список — в [IMPROVEMENTS.md](IMPROVEMENTS.md).
+> **Статус 0.2.0.** `applications`, `printers`, `packages`, `system_settings`
+> и `polkit` подключены к основному потоку. Правила приложений добавляют свои
+> пути в скан, метаданные пакетов/принтеров/dconf/cron сохраняются в manifest,
+> а установка пакетов и настройка принтеров выполняются помощником
+> `migration-master-helper` через `pkexec` только после явного подтверждения.
+> dconf и crontab применяются от имени пользователя. Остались необязательные
+> улучшения (ACL/xattr/SELinux, диалог конфликтов в GUI) — см.
+> [IMPROVEMENTS.md](IMPROVEMENTS.md).
 
 ## Поток данных
 
@@ -91,9 +93,12 @@
 - Проверка canonical paths
 
 ### Polkit
-- Для привилегированных операций предусмотрен helper с белым списком
-- В 0.1.5 helper не вызывается из GUI/CLI; интеграция запланирована
-- Минимальные необходимые права и журналирование — в будущих вызовах
+- Привилегированные операции выполняет отдельный helper с белым списком:
+  установка пользовательских пакетов и настройка принтеров CUPS
+- GUI не запускается от root: он вызывает `pkexec` и helper только после
+  явной галочки/флага, остальные операции выполняются от пользователя
+- Helper проверяет аргументы (имена пакетов, имя/URI/модель принтера) и не
+  принимает произвольные shell-команды; вызовы журналируются
 
 ## Формат архива
 
@@ -105,8 +110,9 @@ profile.rmm
 ```
 
 Отдельных `data.zst`, `checksum.sha256` и каталога `signatures/` в формате
-0.1.5 нет. `manifest.json` содержит `manifest_hash`; `verify` сверяет его и
-SHA-256 каждого файла.
+нет. `manifest.json` содержит `manifest_hash`; `verify` сверяет его и SHA-256
+каждого файла. Необязательное поле `metadata` хранит пакеты, принтеры, дамп
+dconf и crontab; старые архивы без него читаются благодаря `serde(default)`.
 
 ### manifest.json структура
 
@@ -118,7 +124,7 @@ SHA-256 каждого файла.
   "source_user": "user",
   "source_uid": 1000,
   "source_gid": 1000,
-  "app_version": "0.1.5",
+  "app_version": "0.2.0",
   "os_info": {
     "name": "РЕД ОС",
     "version": "8.0",
@@ -140,7 +146,20 @@ SHA-256 каждого файла.
   "total_size": 1234,
   "total_files": 1,
   "encrypted": true,
-  "compression": "zstd"
+  "compression": "zstd",
+  "metadata": {
+    "packages": [{ "name": "firefox", "version": "128.0-1" }],
+    "printers": [{
+      "name": "Office",
+      "model": "everywhere",
+      "device_uri": "ipp://printer.local/ipp/print",
+      "shared": false,
+      "default": true
+    }],
+    "dconf": "[org/gnome/desktop/interface]\ncolor-scheme='prefer-dark'\n",
+    "crontab": "0 9 * * 1-5 /home/user/bin/backup.sh\n",
+    "warnings": []
+  }
 }
 ```
 

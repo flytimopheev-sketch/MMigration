@@ -191,7 +191,6 @@ impl ComponentType {
             Self::Videos,
             Self::Music,
             Self::Templates,
-            Self::CustomDirs,
             Self::AppConfigs,
             Self::AppData,
             Self::LocalBin,
@@ -325,6 +324,13 @@ impl ComponentType {
                 continue;
             }
             match Self::from_key(item) {
+                Some(Self::CustomDirs) => {
+                    return Err(
+                        "компонент custom_dirs зарезервирован и пока не реализован; \
+                         используйте правила приложений"
+                            .to_string(),
+                    );
+                }
                 Some(component) => result.push(component),
                 None => return Err(format!("неизвестный компонент: {}", item)),
             }
@@ -631,6 +637,16 @@ mod tests {
             ]
         );
         assert!(ComponentType::parse_list("documents,unknown").is_err());
+    }
+
+    #[test]
+    fn test_custom_dirs_is_hidden_and_rejected() {
+        assert!(!ComponentType::all_components().contains(&ComponentType::CustomDirs));
+        let error = ComponentType::parse_list("documents,custom_dirs").expect_err("must reject");
+        assert!(
+            error.contains("зарезервирован"),
+            "неожиданная ошибка: {error}"
+        );
     }
 
     #[test]

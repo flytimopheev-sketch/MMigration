@@ -356,7 +356,7 @@ fn action_row(title: &str, subtitle: &str, icon: &str) -> adw::ActionRow {
 ///
 /// `adw::MessageDialog` появился только в libadwaita 1.2, поэтому диалог
 /// собран вручную из `adw::Window` (доступен с libadwaita 1.0).
-fn show_message(window: &adw::ApplicationWindow, heading: &str, body: &str) {
+fn show_message(window: &impl IsA<gtk::Window>, heading: &str, body: &str) {
     let dialog = adw::Window::builder()
         .transient_for(window)
         .modal(true)
@@ -381,13 +381,105 @@ fn show_message(window: &adw::ApplicationWindow, heading: &str, body: &str) {
     text.set_selectable(true);
     content.append(&text);
 
+    let report_path = body
+        .lines()
+        .find_map(|line| line.strip_prefix("Отчёт: "))
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.exists());
+
+    let actions = gtk::Box::new(Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+
+    if let Some(path) = report_path {
+        let open = gtk::Button::with_label("Открыть отчёт");
+        let dialog_for_open = dialog.clone();
+        open.connect_clicked(move |_| open_report(&dialog_for_open, &path));
+        actions.append(&open);
+    }
+
     let close = gtk::Button::with_label("Закрыть");
     close.add_css_class("suggested-action");
     close.set_halign(gtk::Align::End);
     let dialog_for_close = dialog.clone();
     close.connect_clicked(move |_| dialog_for_close.close());
-    content.append(&close);
+    actions.append(&close);
+    content.append(&actions);
 
+    dialog.set_content(Some(&content));
+    dialog.present();
+}
+
+/// Открыть файл отчёта системным приложением (P1 №16).
+///
+/// `gio` доступен вместе с GTK4 и не требует запуска shell-команд. Если
+/// ассоциация не настроена, показываем ошибку с путём — файл можно открыть
+/// вручную.
+fn open_report(window: &impl IsA<gtk::Window>, path: &std::path::Path) {
+    let uri = gtk::gio::File::for_path(path).uri();
+    if let Err(error) =
+        gtk::gio::AppInfo::launch_default_for_uri(uri.as_str(), None::<&gtk::gio::AppLaunchContext>)
+    {
+        show_message(
+            window,
+            "Не удалось открыть отчёт",
+            &format!("{error}\n\nПуть: {}", path.display()),
+        );
+    }
+}
+
+/// Подтверждение переноса приватных SSH-ключей (P0 №4).
+///
+/// Галочка выключена по умолчанию; при включении показываем отдельный диалог.
+/// «Отмена» возвращает галочку в выключенное состояние.
+fn confirm_private_keys(window: &adw::ApplicationWindow, check: &gtk::CheckButton) {
+    let dialog = adw::Window::builder()
+        .transient_for(window)
+        .modal(true)
+        .default_width(460)
+        .build();
+
+    let content = gtk::Box::new(Orientation::Vertical, 12);
+    content.set_margin_top(24);
+    content.set_margin_bottom(24);
+    content.set_margin_start(24);
+    content.set_margin_end(24);
+
+    let heading = gtk::Label::new(Some("Перенос приватных SSH-ключей"));
+    heading.add_css_class("title-2");
+    heading.set_xalign(0.0);
+    heading.set_wrap(true);
+    content.append(&heading);
+
+    let body = gtk::Label::new(Some(
+        "Приватные ключи будут находиться внутри архива. Используйте только \
+         доверенный носитель или зашифрованный архив и не передавайте его \
+         третьим лицам. Продолжить?",
+    ));
+    body.set_xalign(0.0);
+    body.set_wrap(true);
+    content.append(&body);
+
+    let actions = gtk::Box::new(Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+
+    let cancel = gtk::Button::with_label("Отмена");
+    let check_for_cancel = check.clone();
+    let dialog_for_cancel = dialog.clone();
+    cancel.connect_clicked(move |_| {
+        check_for_cancel.set_active(false);
+        dialog_for_cancel.close();
+    });
+    actions.append(&cancel);
+
+    let proceed = gtk::Button::with_label("Продолжить");
+    proceed.add_css_class("destructive-action");
+    let dialog_for_proceed = dialog.clone();
+    proceed.connect_clicked(move |_| dialog_for_proceed.close());
+    actions.append(&proceed);
+
+    content.append(&actions);
     dialog.set_content(Some(&content));
     dialog.present();
 }
@@ -549,6 +641,7 @@ struct CreateFormValues {
 }
 
 /// Прочитать и проверить форму создания архива.
+#[allow(clippy::too_many_arguments)]
 fn read_create_form(
     home_entry: &gtk::Entry,
     output_entry: &gtk::Entry,
@@ -627,7 +720,7 @@ fn create_wizard_config(
 }
 
 /// Краткий итог операции для финального экрана (§16).
-fn operation_summary(report: &MigrationReport, paths: &[std::path::Path]) -> String {
+fn operation_summary(report: &MigrationReport, paths: &[PathBuf]) -> String {
     let mut lines = vec![
         format!("Статус: {}", report.status()),
         format!(
@@ -895,6 +988,14 @@ fn create_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     private_keys_check.set_valign(gtk::Align::Center);
     private_keys_row.add_suffix(&private_keys_check);
     private_keys_row.set_activatable_widget(Some(&private_keys_check));
+    {
+        let window = (*window).clone();
+        private_keys_check.connect_toggled(move |check| {
+            if check.is_active() {
+                confirm_private_keys(&window, check);
+            }
+        });
+    }
     options_group.add(&private_keys_row);
 
     let authorized_keys_row = adw::ActionRow::builder()
@@ -1675,6 +1776,14 @@ fn ssh_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     private_keys_check.set_valign(gtk::Align::Center);
     private_keys_row.add_suffix(&private_keys_check);
     private_keys_row.set_activatable_widget(Some(&private_keys_check));
+    {
+        let window = (*window).clone();
+        private_keys_check.connect_toggled(move |check| {
+            if check.is_active() {
+                confirm_private_keys(&window, check);
+            }
+        });
+    }
     options_group.add(&private_keys_row);
 
     let authorized_keys_row = adw::ActionRow::builder()
@@ -1749,7 +1858,7 @@ fn bind_ssh_action(
     let private_keys_check = (*private_keys_check).clone();
     let authorized_keys_check = (*authorized_keys_check).clone();
 
-    run_widget.connect_clicked(move |_| {
+    run_widget.connect_clicked(move |button| {
         let Some((user, host, port)) = parse_ssh_target(&target_entry.text()) else {
             show_message(
                 &window,
@@ -1790,11 +1899,11 @@ fn bind_ssh_action(
         wizard_config.cancel = Some(token);
         wizard_config.database_path = config::load_config().ok().map(|cfg| cfg.database_path);
 
-        run_widget.set_sensitive(false);
+        button.set_sensitive(false);
         cancel_widget.set_sensitive(true);
         status.set_text("Подключение и передача…");
         let window_done = window.clone();
-        let button_done = run_widget.clone();
+        let button_done = button.clone();
         let cancel_done = cancel_widget.clone();
         let slot_done = Arc::clone(&slot);
         spawn_task(
