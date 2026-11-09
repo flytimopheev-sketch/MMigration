@@ -50,6 +50,14 @@ jobs:
           tail -n 300 clippy.log
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+        first=$(grep -n -m1 -E '^error(\[|:)' clippy.log | cut -d: -f1 || true)
+        if [ -n "$first" ]; then
+          body=$(sed -n "${first},$((first+30))p" clippy.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Clippy output::${body}"
+        else
+          body=$(tail -n 30 clippy.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Clippy output::${body}"
+        fi
 
     - name: Build (CLI)
       working-directory: migration-master
@@ -109,6 +117,8 @@ jobs:
           tail -n 300 gui-selftest.log
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+        body=$(tail -n 50 gui-selftest.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+        echo "::error title=GUI smoke output::${body}"
 
   # То же самое, но на libadwaita 1.2 (Debian 12) — как на РЕД ОС 8.
   # Этот джоб ловит несовместимость с целевой платформой: GTK4 4.8 +
@@ -166,3 +176,5 @@ jobs:
           tail -n 300 gui-selftest.log
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+        body=$(tail -n 50 gui-selftest.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+        echo "::error title=GUI smoke output (Debian 12)::${body}"
