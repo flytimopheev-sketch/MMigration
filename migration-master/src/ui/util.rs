@@ -18,6 +18,13 @@ pub const STRATEGY_LABELS: [&str; 6] = [
 /// Ключи стратегий (см. `ConflictStrategy::from_key`).
 pub const STRATEGY_KEYS: [&str; 6] = ["ask", "skip", "replace", "keep-both", "rename", "newer"];
 
+/// Безопасная стратегия по умолчанию для GUI: `rename`.
+///
+/// Диалог для каждого конфликта в GUI не реализован, поэтому `ask` нельзя
+/// выбирать молча: страница восстановления блокирует его и просит выбрать
+/// явную стратегию. Индекс соответствует `STRATEGY_KEYS`.
+pub const DEFAULT_STRATEGY_INDEX: u32 = 4;
+
 /// Выбранная стратегия конфликтов по индексу выпадающего списка.
 pub fn conflict_strategy(index: u32) -> ConflictStrategy {
     STRATEGY_KEYS
@@ -99,6 +106,15 @@ mod tests {
         assert_eq!(conflict_strategy(5), ConflictStrategy::Newer);
         // Выход за границы — безопасное значение по умолчанию.
         assert_eq!(conflict_strategy(99), ConflictStrategy::Ask);
+    }
+
+    #[test]
+    fn test_gui_default_strategy_is_rename() {
+        assert_eq!(
+            conflict_strategy(DEFAULT_STRATEGY_INDEX),
+            ConflictStrategy::RenameOld
+        );
+        assert_eq!(STRATEGY_KEYS[DEFAULT_STRATEGY_INDEX as usize], "rename");
     }
 
     #[test]

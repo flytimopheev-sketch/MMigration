@@ -2,9 +2,9 @@
 
 Резервное копирование защищает данные от потери при перезаписи во время
 миграции. Автоматические копии создаёт **GUI-мастер** (`MigrationWizard`) перед
-изменением файлов при `auto_backup = true` (значение по умолчанию). CLI
-`restore` автоматический backup **не делает** — для него сохраните профиль
-вручную (см. ниже). Копии хранятся в:
+изменением файлов при `auto_backup = true` (значение по умолчанию). Начиная с
+0.2.0 CLI `restore` также создаёт backup по умолчанию; отключить его можно
+явным `--no-backup`. Копии хранятся в:
 
 ```
 ~/.local/share/migration-master/backups/
@@ -39,13 +39,13 @@ migration-master config list      # показать auto_backup
 
 ```bash
 # 1. Чистый архив профиля (эталон состояния ДО миграции)
-migration-master create --output ~/backup-before-migration.rmm --passphrase '...'
+migration-master create --output ~/backup-before-migration.rmm --ask-passphrase
 
 # 2. Список пакетов (для восстановления окружения)
 migration-master list-packages --json > ~/packages-before.json
 
 # 3. Проверка, что архив читается
-migration-master verify ~/backup-before-migration.rmm --passphrase '...'
+migration-master verify ~/backup-before-migration.rmm --ask-passphrase
 ```
 
 Храните `~/backup-before-migration.rmm` на отдельном носителе до полной
@@ -85,7 +85,7 @@ zstd -dc ~/.local/share/migration-master/backups/<id>.backup.tar.zst | \
 
 ```bash
 migration-master restore ~/backup-before-migration.rmm \
-    --target /home/user --strategy rename --passphrase '...'
+    --target /home/user --strategy rename --ask-passphrase
 ```
 
 ## Ротация
@@ -105,8 +105,10 @@ done
 ## Что НЕ попадает в резервную копию
 
 - кэш, `Trash`, временные файлы (исключены по умолчанию — `DEFAULT_EXCLUSIONS`);
-- приватные SSH-ключи и `authorized_keys` — в 0.1.5 они исключаются всегда
-  (переключателя в CLI/GUI нет);
+- приватные SSH-ключи и `authorized_keys` — только если пользователь явно
+  включил их перенос (`--include-private-ssh-keys` /
+  `--include-authorized-keys` или соответствующие галочки в GUI); по умолчанию
+  они не попадают ни в архив, ни в backup;
 - пароли и passphrase — они не сохраняются нигде.
 
 ## Связанные документы

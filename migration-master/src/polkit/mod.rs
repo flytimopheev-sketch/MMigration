@@ -101,7 +101,139 @@ impl PolkitManager {
     }
 }
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Вызовы привилегированного помощника через `pkexec`.
+///
+/// Пользовательский интерфейс никогда не запускается от root: только helper
+/// получает повышенные права и выполняет команды из белого списка. Если
+/// приложение уже запущено от root (например, в rescue-режиме), helper
+/// вызывается напрямую.
+pub struct PrivilegedExecutor;
+
+impl PrivilegedExecutor {
+    /// Найти helper: переменная окружения, каталог рядом с бинарником, PATH.
+    pub fn resolve_helper() -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("MIGRATION_MASTER_HELPER") {
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                let candidate = parent.join(if cfg!(windows) {
+                    "migration-master-helper.exe"
+                } else {
+                    "migration-master-helper"
+                });
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        let output = Command::new(if cfg!(windows) { "where" } else { "which" })
+            .arg("migration-master-helper")
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()?
+            .trim()
+            .to_string();
+        (!path.is_empty()).then(|| PathBuf::from(path))
+    }
+
+    /// Запустить helper с аргументами, вернуть stdout.
+    pub fn run_helper(args: &[String]) -> Result<String> {
+        let helper = Self::resolve_helper().ok_or_else(|| {
+            crate::error::MigrationError::Unsupported(
+                "migration-master-helper не найден; установите пакет migration-master".to_string(),
+            )
+        })?;
+
+        let mut command = if crate::platform::current_uid() == 0 {
+            Command::new(&helper)
+        } else {
+            let mut command = Command::new("pkexec");
+            command.arg(&helper);
+            command
+        };
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let output = command.output().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                crate::error::MigrationError::PrivilegedRequired(
+                    "pkexec не найден — установите polkit".to_string(),
+                )
+            } else {
+                crate::error::MigrationError::Io(error)
+            }
+        })?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if message.contains("not authorized")
+                || message.contains("Not authorized")
+                || message.contains("dismissed")
+                || message.contains("Запрос отменён")
+            {
+                Err(crate::error::MigrationError::PrivilegedRequired(
+                    "авторизация администратора отменена".to_string(),
+                ))
+            } else {
+                Err(crate::error::MigrationError::Command {
+                    command: "migration-master-helper".to_string(),
+                    message,
+                })
+            }
+        }
+    }
+
+    /// Установить пакеты через helper (`dnf install -y` / `apt-get install -y`).
+    pub fn install_packages(packages: &[String]) -> Result<String> {
+        let packages: Vec<String> = packages
+            .iter()
+            .map(|package| package.trim().to_string())
+            .filter(|package| !package.is_empty())
+            .collect();
+        if packages.is_empty() {
+            return Ok(String::new());
+        }
+        let mut args = vec!["install-packages".to_string()];
+        args.extend(packages);
+        Self::run_helper(&args)
+    }
+
+    /// Настроить принтеры через helper.
+    pub fn configure_printers(printers: &[crate::printers::PrinterEntry]) -> Result<String> {
+        let mut args = vec!["configure-printers".to_string()];
+        args.extend(
+            printers
+                .iter()
+                .filter(|printer| {
+                    !printer.name.trim().is_empty() && !printer.device_uri.trim().is_empty()
+                })
+                .map(crate::printers::PrinterEntry::helper_spec),
+        );
+        if args.len() == 1 {
+            return Ok(String::new());
+        }
+        Self::run_helper(&args)
+    }
+}
 
 #[cfg(test)]
 mod tests {

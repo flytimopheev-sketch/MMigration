@@ -67,7 +67,7 @@ libadwaita: `sudo dnf install gtk4-devel libadwaita-devel`. Собрать па�
 ### `Повреждённый архив` / `checksum mismatch`
 
 ```bash
-migration-master verify profile.rmm --passphrase '...'
+migration-master verify profile.rmm --ask-passphrase
 ```
 
 Если `verify` падает — архив повреждён (обрыв при переносе, битый носитель).
@@ -87,18 +87,19 @@ migration-master create --output /path/with/space/profile.rmm --dry-run
 
 ### Восстановление «прошло успешно», но существующие файлы не заменились
 
-Стратегия `ask` в 0.1.5 не спрашивает: без интерактивного обработчика она
-фактически работает как `skip`. В CLI она выбрана по умолчанию, в GUI — первым
-пунктом списка. Используйте явно:
+В 0.2.0 `ask` действительно спрашивает в интерактивном терминале; если stdin
+не TTY, команда завершается понятной ошибкой, а не молча пропускает файлы.
+В GUI диалог для каждого файла не реализован, поэтому по умолчанию выбран
+безопасный `rename`, а выбор `ask` блокируется с пояснением. Явные стратегии:
 
 ```bash
 migration-master restore profile.rmm --target /home/user \
-  --strategy rename --passphrase '...'
+  --strategy rename --ask-passphrase
 ```
 
-`rename` сохранит старый файл как `*.old`, `replace` заменит его. Это известная
-проблема, исправление запланировано; см.
-[IMPROVEMENTS.md](IMPROVEMENTS.md#1-ask-должен-спрашивать-а-не-пропускать).
+`rename` сохранит старый файл как `*.old`, `replace` заменит его, `skip`
+оставит существующий. Для GUI используйте `rename`/`replace`/`skip`/`newer`;
+интерактивный `ask` доступен только в CLI с терминалом.
 
 ## Path traversal / `запись за пределы целевого каталога`
 
@@ -142,24 +143,27 @@ migration-master migrate-ssh user@host --identity ~/.ssh/id_ed25519 --dry-run
 
 Это ожидаемо: по умолчанию `include_private_ssh_keys = false`, приватные ключи
 не копируются (§4). Публичные ключи, `config` и `known_hosts` переносятся
-всегда. В 0.1.5 переключателя в CLI/GUI нет (внутренний флаг `WizardConfig`
-пользователю недоступен), поэтому ключи копируются вручную:
+всегда. Чтобы включить приватные ключи или `authorized_keys`, используйте
+явные флаги:
 
 ```bash
-install -d -m 700 "$HOME/.ssh"
-cp -a /media/OLD/ssh/id_ed25519 "$HOME/.ssh/"
-chmod 600 "$HOME/.ssh/id_ed25519"
+migration-master create --output profile.rmm --ask-passphrase \
+  --include-private-ssh-keys --include-authorized-keys
 ```
 
-`authorized_keys` копируется так же с правами `0600`. Содержимое ключей не
-попадает в журналы; после восстановления проверьте права. См.
-[IMPROVEMENTS.md](IMPROVEMENTS.md#4-дать-явный-доступ-к-приватным-ssh-ключам-и-authorized_keys).
+В GUI это отдельные галочки на странице создания (выключены по умолчанию).
+После восстановления `~/.ssh` получает права `0700`, приватные ключи и
+`authorized_keys` — `0600`. Содержимое ключей не попадает в журналы.
 
 ## Firefox, Thunderbird, Git и shell
 
-Эти настройки **не попадают** в архив автоматически: правила приложений
-задают их пути, но сканер 0.1.5 их не добавляет. Переносите отдельным
-архивом — команды в [HOST_IMAGE.md](HOST_IMAGE.md#шаг-3-дополнительные-каталоги-которые-не-входят-в-компоненты).
+Начиная с 0.2.0 пути правил приложений добавляются в скан: при выборе
+`app_configs`/`app_data` в архив попадают `.mozilla/firefox`, `.thunderbird`,
+`.gitconfig`, `.bashrc`, `.zshrc` и другие включённые правила. Если нужный
+каталог не попал, проверьте правило в `migration-master app-rules list` или
+`resources/examples/app-rules.yaml`; дополнительные каталоги можно перенести
+отдельным архивом (см.
+[HOST_IMAGE.md](HOST_IMAGE.md#шаг-3-дополнительные-каталоги-которые-не-входят-в-компоненты)).
 
 ## Принтеры
 
@@ -169,10 +173,12 @@ lpstat -v          # device URI
 ```
 
 Если список пуст — CUPS не запущен: `sudo systemctl start cups`.
-Автоматического восстановления принтеров в 0.1.5 нет: в архив попадает только
-пользовательский `~/.cups`, а системные принтеры находятся в `/etc/cups`
-(нужен root). Добавьте их вручную через `http://localhost:631` или `lpadmin`;
-URI берите из `lpstat -v` на исходной машине.
+В 0.2.0 имя, модель, URI и принтер по умолчанию сохраняются в manifest.
+Восстановление выполняется через `migration-master-helper configure-printers`
+по PolicyKit только при явном флаге `--configure-printers` (в GUI — галочка).
+Если `pkexec`/агент polkit недоступен, принтеры можно добавить вручную через
+`http://localhost:631` или `lpadmin`; URI берите из `lpstat -v` на исходной
+машине.
 
 ## Пакеты
 
@@ -180,11 +186,13 @@ URI берите из `lpstat -v` на исходной машине.
 migration-master list-packages --json
 ```
 
-Пакеты **не копируются** как файлы и **не попадают в `.rmm`**: команда только
-печатает список. На новой машине сравните списки и установите недостающее
-вручную (`sudo dnf install ...`). `migration-master-helper install-packages`
-существует, но в 0.1.5 не вызывается из GUI/CLI. Подробный сценарий —
-в [HOST_IMAGE.md](HOST_IMAGE.md#шаг-4-пакеты).
+Пакеты **не копируются** как файлы. В 0.2.0 список явно установленных
+пользователем пакетов сохраняется в manifest, при восстановлении показывается
+diff с целевой системой. Установка выполняется через
+`migration-master-helper install-packages` по PolicyKit только при явном
+флаге `--install-packages` (в GUI — галочка) и только после подтверждения.
+Без флага установите недостающее вручную (`sudo dnf install ...`). Подробный
+сценарий — в [HOST_IMAGE.md](HOST_IMAGE.md#шаг-4-пакеты).
 
 ## Политики PolicyKit
 
@@ -195,16 +203,16 @@ sudo dnf install polkit
 # агент должен быть запущен (polkit-gnome / polkit-kde / lxqt-policykit)
 ```
 
-В 0.1.5 это не блокирует миграцию: обычные операции выполняются от
-пользователя, а `migration-master-helper` из GUI/CLI не вызывается. Пакеты,
-принтеры и `/etc` настраиваются вручную; интеграция helper — в планах
-([IMPROVEMENTS.md](IMPROVEMENTS.md)).
+Это не блокирует обычную миграцию: файлы, dconf и cron обрабатываются от
+пользователя. Без `pkexec`/агента polkit не будут работать только
+`--install-packages` и `--configure-printers` (и соответствующие галочки GUI);
+их можно выполнить вручную после восстановления.
 
 ### Запрос пароля появляется слишком часто
 
-Это относится к будущим привилегированным операциям: политика и helper уже
-есть в пакете, но пока не используются. См.
-`resources/com.redos.migration-master.policy`.
+PolicyKit может запрашивать пароль администратора для каждой привилегированной
+операции. Это ожидаемо и не кэшируется приложением. Политика и helper входят в
+пакет: `resources/com.redos.migration-master.policy`.
 
 ## GUI
 
@@ -252,7 +260,7 @@ rpm -qR migration-master | grep -E 'gtk|adwaita'
 `rpmbuild --without gui`). Поставьте обычный релизный RPM с GUI:
 
 ```bash
-sudo dnf install ./migration-master-0.1.5-1.x86_64.rpm
+sudo dnf install ./migration-master-0.2.0-1.x86_64.rpm
 ```
 
 Сборка из исходников с графической частью:

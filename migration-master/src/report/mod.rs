@@ -106,6 +106,9 @@ pub struct MigrationReport {
     /// Восстановленные принтеры
     #[serde(default)]
     pub restored_printers: Vec<String>,
+    /// Применённые системные настройки (dconf, cron и т.п.)
+    #[serde(default)]
+    pub applied_settings: Vec<String>,
     /// Рекомендации пользователю
     #[serde(default)]
     pub recommendations: Vec<String>,
@@ -143,6 +146,7 @@ impl MigrationReport {
             conflicts: Vec::new(),
             installed_packages: Vec::new(),
             restored_printers: Vec::new(),
+            applied_settings: Vec::new(),
             recommendations: Vec::new(),
             backup_path: None,
             compatibility: None,
@@ -307,6 +311,12 @@ td,th{{border:1px solid #ccc;padding:.4rem .8rem;text-align:left}}</style></head
                 self.restored_printers.clone(),
             ));
         }
+        if !self.applied_settings.is_empty() {
+            sections.push((
+                format!("Системные настройки ({})", self.applied_settings.len()),
+                self.applied_settings.clone(),
+            ));
+        }
         if !self.recommendations.is_empty() {
             sections.push(("Рекомендации".to_string(), self.recommendations.clone()));
         }
@@ -400,6 +410,7 @@ td,th{{border:1px solid #ccc;padding:.4rem .8rem;text-align:left}}</style></head
         write_section(&mut out, "КОНФЛИКТЫ", &self.conflicts);
         write_section(&mut out, "ПАКЕТЫ", &self.installed_packages);
         write_section(&mut out, "ПРИНТЕРЫ", &self.restored_printers);
+        write_section(&mut out, "СИСТЕМНЫЕ НАСТРОЙКИ", &self.applied_settings);
         write_section(&mut out, "ПРЕДУПРЕЖДЕНИЯ", &self.warnings);
         write_section(&mut out, "ОШИБКИ", &self.errors);
         write_section(&mut out, "РЕКОМЕНДАЦИИ", &self.recommendations);

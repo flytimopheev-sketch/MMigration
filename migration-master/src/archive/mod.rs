@@ -15,11 +15,17 @@ use std::path::{Path, PathBuf};
 
 use crate::cancel::CancelToken;
 use crate::config::ComponentType;
+use crate::conflict_resolver::ConflictHandler;
 use crate::conflict_resolver::{ConflictInfo, ConflictKind, ConflictResolver, ConflictStrategy};
+use crate::cron_jobs::CronJobs;
 use crate::error::{MigrationError, Result};
 use crate::file_transfer::{self, ProgressObserver, TransferItem};
+use crate::packages::{PackageEntry, PackageManager};
 use crate::platform;
+use crate::polkit::PrivilegedExecutor;
+use crate::printers::PrinterEntry;
 use crate::security;
+use crate::system_settings::SystemSettings;
 
 /// Сведения об операционной системе источника.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -40,6 +46,72 @@ impl OsInfo {
             name: release.pretty_name,
             version: release.version,
             architecture: platform::architecture(),
+        }
+    }
+}
+
+/// Метаданные профиля, которые не являются файлами.
+///
+/// Хранятся прямо в манифесте: список пакетов, принтеры, дамп dconf и crontab.
+/// Поля добавлены в формат v1 как необязательные, поэтому архивы 0.1.x
+/// продолжают читаться.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ArchiveMetadata {
+    /// Пользовательские пакеты (не `rpm -qa`, а `dnf repoquery --userinstalled`)
+    #[serde(default)]
+    pub packages: Vec<PackageEntry>,
+    /// Принтеры CUPS
+    #[serde(default)]
+    pub printers: Vec<PrinterEntry>,
+    /// Дамп `dconf dump /`
+    #[serde(default)]
+    pub dconf: Option<String>,
+    /// Вывод `crontab -l`
+    #[serde(default)]
+    pub crontab: Option<String>,
+    /// Предупреждения сбора метаданных (например, dnf недоступен)
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+impl ArchiveMetadata {
+    /// Есть ли хоть какие-то метаданные.
+    pub fn is_empty(&self) -> bool {
+        self.packages.is_empty()
+            && self.printers.is_empty()
+            && self.dconf.as_deref().unwrap_or("").trim().is_empty()
+            && self.crontab.as_deref().unwrap_or("").trim().is_empty()
+    }
+
+    /// Краткое описание для интерфейса и отчёта.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.packages.is_empty() {
+            parts.push(format!("пакетов: {}", self.packages.len()));
+        }
+        if !self.printers.is_empty() {
+            parts.push(format!("принтеров: {}", self.printers.len()));
+        }
+        if self
+            .dconf
+            .as_deref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+        {
+            parts.push("dconf: есть".to_string());
+        }
+        if self
+            .crontab
+            .as_deref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+        {
+            parts.push("crontab: есть".to_string());
+        }
+        if parts.is_empty() {
+            "нет".to_string()
+        } else {
+            parts.join(", ")
         }
     }
 }
@@ -119,6 +191,9 @@ pub struct ArchiveManifest {
     pub components: Vec<ComponentType>,
     /// Список файлов
     pub files: Vec<FileEntry>,
+    /// Метаданные профиля (пакеты, принтеры, dconf, cron)
+    #[serde(default)]
+    pub metadata: ArchiveMetadata,
     /// Общий размер данных
     pub total_size: u64,
     /// Количество файлов
@@ -175,6 +250,8 @@ pub struct CreateArchiveOptions {
     pub items: Vec<TransferItem>,
     /// Компоненты, включённые в архив
     pub components: Vec<ComponentType>,
+    /// Метаданные профиля (пакеты, принтеры, dconf, cron)
+    pub metadata: ArchiveMetadata,
     /// Пароль шифрования (None — без шифрования)
     pub passphrase: Option<String>,
     /// Уровень сжатия zstd (0-22)
@@ -192,6 +269,7 @@ impl Default for CreateArchiveOptions {
             source_home: PathBuf::new(),
             items: Vec::new(),
             components: Vec::new(),
+            metadata: ArchiveMetadata::default(),
             passphrase: None,
             compression_level: 3,
             dry_run: false,
@@ -244,6 +322,12 @@ pub struct RestoreOptions {
     pub verify_hash: bool,
     /// Режим без изменений
     pub dry_run: bool,
+    /// Установить пакеты из манифеста (явное согласие пользователя)
+    pub install_packages: bool,
+    /// Настроить принтеры из манифеста (явное согласие пользователя)
+    pub configure_printers: bool,
+    /// Применить dconf и crontab из манифеста (явное согласие пользователя)
+    pub apply_system_settings: bool,
     /// Токен отмены длительной операции
     pub cancel: Option<CancelToken>,
 }
@@ -258,6 +342,9 @@ impl Default for RestoreOptions {
             strategy: ConflictStrategy::Ask,
             verify_hash: false,
             dry_run: false,
+            install_packages: false,
+            configure_printers: false,
+            apply_system_settings: false,
             cancel: None,
         }
     }
@@ -276,6 +363,18 @@ pub struct RestoreResult {
     pub verified_files: u64,
     /// Обнаруженные конфликты
     pub conflicts: Vec<ConflictInfo>,
+    /// Пропущенные пути (для заметного отчёта о неполном восстановлении)
+    pub skipped_paths: Vec<String>,
+    /// Метаданные архива (пакеты, принтеры, dconf, cron)
+    pub metadata: ArchiveMetadata,
+    /// Установленные пакеты
+    pub installed_packages: Vec<String>,
+    /// Настроенные принтеры
+    pub restored_printers: Vec<String>,
+    /// Применённые системные настройки
+    pub applied_settings: Vec<String>,
+    /// Некритичные предупреждения
+    pub warnings: Vec<String>,
     /// Ошибки
     pub errors: Vec<String>,
 }
@@ -397,6 +496,7 @@ fn build_manifest(
         os_info: OsInfo::from_system(),
         components: options.components.clone(),
         files,
+        metadata: options.metadata.clone(),
         total_size,
         total_files: 0,
         encrypted: options.passphrase.is_some(),
@@ -423,9 +523,9 @@ impl ArchiveManager {
     ) -> Result<CreateArchiveResult> {
         let started = std::time::Instant::now();
 
-        if options.items.is_empty() {
+        if options.items.is_empty() && options.metadata.is_empty() {
             return Err(MigrationError::InvalidInput(
-                "нечего упаковывать: список файлов пуст".to_string(),
+                "нечего упаковывать: список файлов и метаданных пуст".to_string(),
             ));
         }
 
@@ -889,8 +989,31 @@ impl ArchiveManager {
         options: &RestoreOptions,
         observer: &dyn ProgressObserver,
     ) -> Result<RestoreResult> {
+        Self::restore_inner(options, observer, None)
+    }
+
+    /// Восстановить архив с интерактивным разрешением конфликтов.
+    pub fn restore_with_handler<F>(
+        options: &RestoreOptions,
+        observer: &dyn ProgressObserver,
+        handler: F,
+    ) -> Result<RestoreResult>
+    where
+        F: FnMut(&ConflictInfo) -> ConflictStrategy + Send + 'static,
+    {
+        Self::restore_inner(options, observer, Some(Box::new(handler)))
+    }
+
+    fn restore_inner(
+        options: &RestoreOptions,
+        observer: &dyn ProgressObserver,
+        handler: Option<ConflictHandler>,
+    ) -> Result<RestoreResult> {
         let manifest = Self::read_manifest(&options.archive, options.passphrase.as_deref())?;
-        let mut result = RestoreResult::default();
+        let mut result = RestoreResult {
+            metadata: manifest.metadata.clone(),
+            ..RestoreResult::default()
+        };
 
         let wanted: Vec<&FileEntry> = match &options.components {
             Some(components) => manifest.files_for_components(components),
@@ -922,6 +1045,9 @@ impl ArchiveManager {
             .map(|file| (file.relative_path.replace('\\', "/"), file))
             .collect();
         let mut resolver = ConflictResolver::new(options.strategy);
+        if let Some(handler) = handler {
+            resolver = resolver.with_handler(handler);
+        }
         let mut done_bytes = 0u64;
 
         for entry in tar_reader.entries()? {
@@ -961,6 +1087,7 @@ impl ArchiveManager {
                 match decision {
                     ConflictStrategy::Skip => {
                         result.skipped_files += 1;
+                        result.skipped_paths.push(file_entry.relative_path.clone());
                         continue;
                     }
                     ConflictStrategy::Replace => {
@@ -979,6 +1106,7 @@ impl ArchiveManager {
                     }
                     _ => {
                         result.skipped_files += 1;
+                        result.skipped_paths.push(file_entry.relative_path.clone());
                         continue;
                     }
                 }
@@ -1015,7 +1143,97 @@ impl ArchiveManager {
         }
 
         result.conflicts = resolver.conflicts().to_vec();
+        result
+            .warnings
+            .extend(manifest.metadata.warnings.iter().cloned());
+
+        if !options.dry_run {
+            Self::apply_metadata(options, &manifest.metadata, &mut result);
+        }
+
         Ok(result)
+    }
+
+    /// Применить метаданные архива только по явным флагам пользователя.
+    ///
+    /// Пакеты и принтеры требуют root и выполняются через helper/polkit.
+    /// dconf и crontab — пользовательские операции.
+    fn apply_metadata(
+        options: &RestoreOptions,
+        metadata: &ArchiveMetadata,
+        result: &mut RestoreResult,
+    ) {
+        if options.install_packages && !metadata.packages.is_empty() {
+            match PackageManager::detect().missing_from_system(&metadata.packages) {
+                Ok(missing) if missing.is_empty() => {
+                    result
+                        .warnings
+                        .push("все пользовательские пакеты уже установлены".to_string());
+                }
+                Ok(missing) => {
+                    let names: Vec<String> =
+                        missing.iter().map(|entry| entry.name.clone()).collect();
+                    match PrivilegedExecutor::install_packages(&names) {
+                        Ok(_) => {
+                            result.installed_packages = names;
+                            result
+                                .applied_settings
+                                .push("установлены пакеты".to_string());
+                        }
+                        Err(error) => result
+                            .errors
+                            .push(format!("не удалось установить пакеты: {}", error)),
+                    }
+                }
+                Err(error) => result
+                    .warnings
+                    .push(format!("не удалось сравнить список пакетов: {}", error)),
+            }
+        }
+
+        if options.configure_printers && !metadata.printers.is_empty() {
+            match PrivilegedExecutor::configure_printers(&metadata.printers) {
+                Ok(_) => {
+                    result.restored_printers = metadata
+                        .printers
+                        .iter()
+                        .map(|printer| printer.name.clone())
+                        .collect();
+                    result
+                        .applied_settings
+                        .push("настроены принтеры".to_string());
+                }
+                Err(error) => result
+                    .errors
+                    .push(format!("не удалось настроить принтеры: {}", error)),
+            }
+        }
+
+        if options.apply_system_settings {
+            if let Some(dump) = metadata.dconf.as_deref() {
+                if !dump.trim().is_empty() {
+                    match SystemSettings::apply_dconf_dump(dump) {
+                        Ok(()) => result.applied_settings.push("применён dconf".to_string()),
+                        Err(error) => result
+                            .warnings
+                            .push(format!("не удалось применить dconf: {}", error)),
+                    }
+                }
+            }
+
+            if let Some(crontab) = metadata.crontab.as_deref() {
+                if !crontab.trim().is_empty() {
+                    match CronJobs::restore(crontab) {
+                        Ok(()) => result
+                            .applied_settings
+                            .push("восстановлен crontab".to_string()),
+                        Err(error) => result
+                            .errors
+                            .push(format!("не удалось восстановить crontab: {}", error)),
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1056,6 +1274,7 @@ mod tests {
             source_home: home.to_path_buf(),
             items: make_items(home),
             components: vec![ComponentType::Documents, ComponentType::AppConfigs],
+            metadata: ArchiveMetadata::default(),
             passphrase: passphrase.map(str::to_string),
             compression_level: 3,
             dry_run: false,
@@ -1072,6 +1291,9 @@ mod tests {
             strategy: ConflictStrategy::Replace,
             verify_hash: true,
             dry_run: false,
+            install_packages: false,
+            configure_printers: false,
+            apply_system_settings: false,
             cancel: None,
         }
     }
@@ -1245,6 +1467,7 @@ mod tests {
             source_home: dir.path().to_path_buf(),
             items: Vec::new(),
             components: Vec::new(),
+            metadata: ArchiveMetadata::default(),
             passphrase: None,
             compression_level: 3,
             dry_run: false,

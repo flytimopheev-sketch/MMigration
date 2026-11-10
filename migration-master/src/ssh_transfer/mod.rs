@@ -157,22 +157,45 @@ impl SshTransfer {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Отпечаток ключа хоста (`ssh-keyscan`).
+    /// Отпечаток ключа хоста (`ssh-keyscan` + `ssh-keygen -lf -`).
+    ///
+    /// Показывается пользователю до подключения. `accept-new` принимает новый
+    /// ключ только при первом подключении; изменение известного ключа
+    /// по-прежнему блокируется (защита от MITM).
     pub fn host_fingerprint(&self) -> Result<Option<String>> {
-        let output = Command::new("ssh-keyscan")
+        let scan = Command::new("ssh-keyscan")
             .args(["-p", &self.target.port.to_string(), &self.target.host])
             .stdin(Stdio::null())
             .output()
             .map_err(|_| MigrationError::missing_tool("ssh-keyscan"))?;
 
+        if !scan.status.success() || scan.stdout.is_empty() {
+            return Ok(None);
+        }
+
+        let mut child = Command::new("ssh-keygen")
+            .args(["-lf", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| MigrationError::missing_tool("ssh-keygen"))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            use std::io::Write;
+            stdin.write_all(&scan.stdout)?;
+        }
+        let output = child.wait_with_output()?;
         if !output.status.success() {
             return Ok(None);
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout)
+        let fingerprint = String::from_utf8_lossy(&output.stdout)
             .lines()
-            .find(|line| !line.starts_with('#'))
-            .map(|line| line.to_string()))
+            .next()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string);
+        Ok(fingerprint)
     }
 
     fn run_ssh(&self, remote_args: &[&str]) -> Result<Output> {
@@ -200,15 +223,25 @@ impl SshTransfer {
         args.push("BatchMode=yes".to_string());
         args.push("-o".to_string());
         args.push("StrictHostKeyChecking=accept-new".to_string());
+        if let Some(known_hosts) = &self.target.known_hosts_file {
+            args.push("-o".to_string());
+            args.push(format!("UserKnownHostsFile={}", known_hosts.display()));
+        }
         args
     }
 
     fn ssh_transport_string(&self) -> String {
         let mut transport = format!("ssh -p {}", self.target.port);
         if let Some(identity) = &self.target.identity_file {
-            transport.push_str(&format!(" -i {}", identity.display()));
+            transport.push_str(&format!(" -i {}", shell_quote(&identity.to_string_lossy())));
         }
-        transport.push_str(" -o BatchMode=yes");
+        if let Some(known_hosts) = &self.target.known_hosts_file {
+            transport.push_str(&format!(
+                " -o UserKnownHostsFile={}",
+                shell_quote(&known_hosts.to_string_lossy())
+            ));
+        }
+        transport.push_str(" -o BatchMode=yes -o StrictHostKeyChecking=accept-new");
         transport
     }
 
@@ -263,6 +296,7 @@ impl SshTransfer {
         let output = if use_rsync {
             let mut command = Command::new("rsync");
             command.arg("-a");
+            command.arg("--partial");
             if options.compress {
                 command.arg("-z");
             }
@@ -275,14 +309,22 @@ impl SshTransfer {
             command.arg("-e");
             command.arg(self.ssh_transport_string());
             command.arg(local);
-            command.arg(format!("{}:{}", self.target.destination(), remote));
+            command.arg(format!(
+                "{}:{}",
+                self.target.destination(),
+                quote_remote_path(remote)
+            ));
             self.finish(command)?
         } else {
             let mut command = Command::new("scp");
             command.args(self.scp_base_args(options.compress));
             command.arg("-r");
             command.arg(local);
-            command.arg(format!("{}:{}", self.target.destination(), remote));
+            command.arg(format!(
+                "{}:{}",
+                self.target.destination(),
+                quote_remote_path(remote)
+            ));
             self.finish(command)?
         };
 
@@ -320,7 +362,11 @@ impl SshTransfer {
         let mut command = Command::new("scp");
         command.args(self.scp_base_args(options.compress));
         command.arg("-r");
-        command.arg(format!("{}:{}", self.target.destination(), remote));
+        command.arg(format!(
+            "{}:{}",
+            self.target.destination(),
+            quote_remote_path(remote)
+        ));
         command.arg(local);
 
         let output = self.finish(command)?;
@@ -340,6 +386,28 @@ impl SshTransfer {
             duration_ms,
             ..Default::default()
         })
+    }
+}
+
+/// Заключить строку в одинарные кавычки для shell.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Безопасно процитировать удалённый путь для scp/rsync.
+///
+/// `~/` сохраняется как раскрываемый домашний каталог, остальная часть
+/// цитируется. Без этого пробелы и `$(...)` в пути выполнились бы удалённым
+/// shell (command injection).
+fn quote_remote_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if rest.is_empty() {
+            "~/".to_string()
+        } else {
+            format!("~/{}", shell_quote(rest))
+        }
+    } else {
+        shell_quote(path)
     }
 }
 
@@ -402,6 +470,20 @@ mod tests {
             .pull("/remote/x", &dir.path().join("in"), &options)
             .expect("dry pull");
         assert_eq!(result.bytes, 0);
+    }
+
+    #[test]
+    fn test_quote_remote_path_blocks_shell_injection() {
+        assert_eq!(
+            quote_remote_path("/home/user/My Files"),
+            "'/home/user/My Files'"
+        );
+        assert_eq!(
+            quote_remote_path("~/a b/$(touch pwned)"),
+            "~/'a b/$(touch pwned)'"
+        );
+        assert_eq!(quote_remote_path("/tmp/it's"), "'/tmp/it'\\''s'");
+        assert_eq!(quote_remote_path("~/"), "~/");
     }
 
     #[test]

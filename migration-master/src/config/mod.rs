@@ -120,7 +120,7 @@ pub struct MigrationProfile {
 }
 
 /// Типы компонентов для переноса
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentType {
     /// Рабочий стол
@@ -191,7 +191,6 @@ impl ComponentType {
             Self::Videos,
             Self::Music,
             Self::Templates,
-            Self::CustomDirs,
             Self::AppConfigs,
             Self::AppData,
             Self::LocalBin,
@@ -325,6 +324,13 @@ impl ComponentType {
                 continue;
             }
             match Self::from_key(item) {
+                Some(Self::CustomDirs) => {
+                    return Err(
+                        "компонент custom_dirs зарезервирован и пока не реализован; \
+                         используйте правила приложений"
+                            .to_string(),
+                    );
+                }
                 Some(component) => result.push(component),
                 None => return Err(format!("неизвестный компонент: {}", item)),
             }
@@ -333,15 +339,20 @@ impl ComponentType {
     }
 
     /// Пути компонента относительно домашнего каталога пользователя.
+    ///
+    /// Каталоги рабочего стола, документов и т.п. берутся из
+    /// `~/.config/user-dirs.dirs` (XDG), поэтому работают локализованные и
+    /// произвольные имена каталогов. Для старых профилей без XDG остаётся
+    /// английский и русский варианты.
     pub fn default_paths(&self, home: &std::path::Path) -> Vec<std::path::PathBuf> {
         match self {
-            Self::Desktop => vec![home.join("Desktop"), home.join("Рабочий стол")],
-            Self::Documents => vec![home.join("Documents"), home.join("Документы")],
-            Self::Downloads => vec![home.join("Downloads"), home.join("Загрузки")],
-            Self::Pictures => vec![home.join("Pictures"), home.join("Изображения")],
-            Self::Videos => vec![home.join("Videos"), home.join("Видео")],
-            Self::Music => vec![home.join("Music"), home.join("Музыка")],
-            Self::Templates => vec![home.join("Templates"), home.join("Шаблоны")],
+            Self::Desktop => xdg_paths(home, "XDG_DESKTOP_DIR", &["Desktop", "Рабочий стол"]),
+            Self::Documents => xdg_paths(home, "XDG_DOCUMENTS_DIR", &["Documents", "Документы"]),
+            Self::Downloads => xdg_paths(home, "XDG_DOWNLOAD_DIR", &["Downloads", "Загрузки"]),
+            Self::Pictures => xdg_paths(home, "XDG_PICTURES_DIR", &["Pictures", "Изображения"]),
+            Self::Videos => xdg_paths(home, "XDG_VIDEOS_DIR", &["Videos", "Видео"]),
+            Self::Music => xdg_paths(home, "XDG_MUSIC_DIR", &["Music", "Музыка"]),
+            Self::Templates => xdg_paths(home, "XDG_TEMPLATES_DIR", &["Templates", "Шаблоны"]),
             Self::CustomDirs => Vec::new(),
             Self::AppConfigs => vec![home.join(".config")],
             Self::AppData => vec![home.join(".local").join("share")],
@@ -352,13 +363,20 @@ impl ComponentType {
             Self::Fonts => vec![home.join(".fonts"), home.join(".local/share/fonts")],
             Self::SshKeys => vec![home.join(".ssh")],
             Self::Printers => vec![home.join(".cups")],
-            Self::Packages => vec![home.join(".local/share/migration-master/package-list.json")],
-            Self::SystemSettings => {
-                vec![home.join(".config/migration-master/system-settings.json")]
-            }
-            Self::CronJobs => vec![home.join(".config/migration-master/crontab.txt")],
+            // Список пакетов и crontab хранятся в манифесте архива, а не
+            // отдельными файлами в профиле.
+            Self::Packages | Self::CronJobs => Vec::new(),
+            Self::SystemSettings => crate::system_settings::SystemSettings::profile_paths()
+                .iter()
+                .map(|relative| home.join(relative))
+                .collect(),
             Self::UserServices => vec![home.join(".config/systemd/user")],
         }
+    }
+
+    /// Компонент целиком хранится в манифесте (пакеты, cron).
+    pub fn metadata_only(&self) -> bool {
+        matches!(self, Self::Packages | Self::CronJobs)
     }
 
     /// Основной префикс пути в архиве (для фильтрации при восстановлении).
@@ -396,6 +414,71 @@ impl ComponentType {
             Self::SshKeys | Self::Printers | Self::Packages | Self::SystemSettings
         )
     }
+}
+
+/// Прочитать XDG-каталог пользователя из `user-dirs.dirs`.
+///
+/// Возвращает только первый путь: если каталог не настроен или указывает за
+/// пределы HOME, используются английский и русский варианты. Так сканирование
+/// не выходит за границы профиля и не теряет файлы на локализованных системах.
+fn xdg_paths(home: &std::path::Path, key: &str, fallbacks: &[&str]) -> Vec<PathBuf> {
+    let configured = read_xdg_user_dir(home, key);
+    let fallback = fallbacks
+        .iter()
+        .map(|name| home.join(name))
+        .find(|path| path.is_dir())
+        .or_else(|| fallbacks.first().map(|name| home.join(name)));
+
+    match (configured, fallback) {
+        (Some(path), Some(fallback)) => {
+            let mut paths = vec![path];
+            if paths[0] != fallback && fallback.is_dir() {
+                paths.push(fallback);
+            }
+            paths
+        }
+        (Some(path), None) => vec![path],
+        (None, Some(fallback)) => vec![fallback],
+        (None, None) => Vec::new(),
+    }
+}
+
+/// Значение `XDG_*_DIR` из `~/.config/user-dirs.dirs`.
+fn read_xdg_user_dir(home: &std::path::Path, key: &str) -> Option<PathBuf> {
+    let content = std::fs::read_to_string(home.join(".config/user-dirs.dirs")).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name.trim() != key {
+            continue;
+        }
+        let value = value.trim().trim_matches('"');
+        if value.is_empty() {
+            continue;
+        }
+        let expanded = value
+            .strip_prefix("$HOME/")
+            .map(|rest| home.join(rest))
+            .or_else(|| (value == "$HOME").then(|| home.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from(value));
+
+        // XDG-файл может содержать путь вне HOME (например, смонтированный
+        // диск). Для профиля такой путь не сканируем: миграция должна
+        // оставаться в домашнем каталоге.
+        if expanded.is_absolute() && !expanded.starts_with(home) {
+            return None;
+        }
+        if expanded == home {
+            return None;
+        }
+        return Some(expanded);
+    }
+    None
 }
 
 /// Уровень риска операции
@@ -554,6 +637,16 @@ mod tests {
             ]
         );
         assert!(ComponentType::parse_list("documents,unknown").is_err());
+    }
+
+    #[test]
+    fn test_custom_dirs_is_hidden_and_rejected() {
+        assert!(!ComponentType::all_components().contains(&ComponentType::CustomDirs));
+        let error = ComponentType::parse_list("documents,custom_dirs").expect_err("must reject");
+        assert!(
+            error.contains("зарезервирован"),
+            "неожиданная ошибка: {error}"
+        );
     }
 
     #[test]

@@ -75,14 +75,102 @@ impl PackageManager {
         Ok(parse_package_list(&text))
     }
 
+    /// Список явно установленных пользователем пакетов.
+    ///
+    /// Для РЕД ОС используется `dnf repoquery --userinstalled`, с откатом на
+    /// `dnf history userinstalled`. Список `rpm -qa` намеренно не применяется:
+    /// он содержит ядра, драйверы и системные пакеты, установка которых на
+    /// другую машину опасна.
+    pub fn list_user_installed(&self) -> Result<Vec<PackageEntry>> {
+        match self {
+            Self::Dpkg => {
+                let manual = Command::new("apt-mark")
+                    .arg("showmanual")
+                    .stdin(Stdio::null())
+                    .output()
+                    .map_err(|_| MigrationError::missing_tool("apt-mark"))?;
+                if !manual.status.success() {
+                    return Err(MigrationError::Command {
+                        command: "apt-mark".to_string(),
+                        message: String::from_utf8_lossy(&manual.stderr).trim().to_string(),
+                    });
+                }
+                let wanted: std::collections::HashSet<String> =
+                    String::from_utf8_lossy(&manual.stdout)
+                        .lines()
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                Ok(self
+                    .list_installed()?
+                    .into_iter()
+                    .filter(|entry| wanted.contains(&entry.name))
+                    .collect())
+            }
+            Self::Rpm => {
+                let output = Command::new("dnf")
+                    .args([
+                        "-q",
+                        "repoquery",
+                        "--userinstalled",
+                        "--qf",
+                        "%{name}\\t%{version}-%{release}\\n",
+                    ])
+                    .stdin(Stdio::null())
+                    .output();
+                if let Ok(output) = output {
+                    if output.status.success() {
+                        let entries = parse_package_list(&String::from_utf8_lossy(&output.stdout));
+                        if !entries.is_empty() {
+                            return Ok(entries);
+                        }
+                    }
+                }
+
+                // Резервный путь для старых dnf: только имена без версий.
+                let history = Command::new("dnf")
+                    .arg("history")
+                    .arg("userinstalled")
+                    .stdin(Stdio::null())
+                    .output()
+                    .map_err(|_| MigrationError::missing_tool("dnf"))?;
+                if !history.status.success() {
+                    return Err(MigrationError::Command {
+                        command: "dnf".to_string(),
+                        message: String::from_utf8_lossy(&history.stderr).trim().to_string(),
+                    });
+                }
+                Ok(parse_userinstalled_history(&String::from_utf8_lossy(
+                    &history.stdout,
+                )))
+            }
+        }
+    }
+
     /// Экспорт списка пакетов (по одному в строке: имя<TAB>версия).
     pub fn export_list(&self) -> Result<String> {
         let entries = self.list_installed()?;
-        Ok(entries
+        Ok(export_entries(&entries))
+    }
+
+    /// Экспорт только пользовательских пакетов.
+    pub fn export_user_installed(&self) -> Result<String> {
+        Ok(export_entries(&self.list_user_installed()?))
+    }
+
+    /// Пакеты из списка источника, которых нет в текущей системе.
+    pub fn missing_from_system(&self, wanted: &[PackageEntry]) -> Result<Vec<PackageEntry>> {
+        let installed: std::collections::HashSet<String> = self
+            .list_installed()?
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        Ok(wanted
             .iter()
-            .map(|entry| format!("{}\t{}", entry.name, entry.version))
-            .collect::<Vec<_>>()
-            .join("\n"))
+            .filter(|entry| !installed.contains(&entry.name))
+            .cloned()
+            .collect())
     }
 
     /// Команда установки пакетов (для выполнения на целевой системе).
@@ -96,7 +184,7 @@ impl PackageManager {
                 command
             }
             Self::Rpm => {
-                let mut args = vec!["-y".to_string(), "-i".to_string()];
+                let mut args = vec!["install".to_string(), "-y".to_string()];
                 args.extend(packages.iter().cloned());
                 let mut command = vec!["dnf".to_string()];
                 command.extend(args);
@@ -104,6 +192,65 @@ impl PackageManager {
             }
         }
     }
+}
+
+fn export_entries(entries: &[PackageEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| format!("{}\t{}", entry.name, entry.version))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Разобрать `dnf history userinstalled`.
+///
+/// В разных версиях dnf вывод содержит либо просто имена, либо заголовок и
+/// строки вида `package : name`. Поддерживаются оба варианта.
+pub fn parse_userinstalled_history(text: &str) -> Vec<PackageEntry> {
+    let mut seen = std::collections::HashSet::new();
+    let mut entries = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty()
+            || line.starts_with('#')
+            || line.starts_with("Last metadata")
+            || line.starts_with("Command line")
+            || line.starts_with("Available")
+            || line.starts_with("Installed")
+        {
+            continue;
+        }
+        let name = match line.split_once(':') {
+            Some((left, right))
+                if left.trim().eq_ignore_ascii_case("package")
+                    || left.trim().eq_ignore_ascii_case("name") =>
+            {
+                right.trim()
+            }
+            Some((left, _)) => left.trim(),
+            None => line,
+        }
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim();
+        // Пропускаем строки-заголовки и явно не пакетные значения.
+        if name.is_empty()
+            || !name.chars().any(|c| c.is_ascii_alphabetic())
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '.' | ':'))
+        {
+            continue;
+        }
+        if seen.insert(name.to_string()) {
+            entries.push(PackageEntry {
+                name: name.to_string(),
+                version: String::new(),
+            });
+        }
+    }
+    entries
 }
 
 /// Разобрать вывод `dpkg-query`/`rpm -qa` (строки `имя<TAB>версия`).
@@ -151,6 +298,21 @@ mod tests {
 
         let rpm = PackageManager::Rpm.install_command(&packages);
         assert_eq!(rpm[0], "dnf");
+        assert!(rpm.contains(&"install".to_string()));
         assert!(rpm.contains(&"htop".to_string()));
+    }
+
+    #[test]
+    fn test_parse_userinstalled_history() {
+        let text = "\
+Last metadata expiration check: 0:01:00 ago.
+htop
+vim-enhanced
+htop
+package : curl
+";
+        let entries = parse_userinstalled_history(text);
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["htop", "vim-enhanced", "curl"]);
     }
 }

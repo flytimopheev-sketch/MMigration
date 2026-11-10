@@ -54,6 +54,13 @@
   <update_contact>team@redos.local</update_contact>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-11-09">
+      <description>
+        <p>Пакеты, принтеры, dconf и cron сохраняются в manifest; установка пакетов и настройка принтеров выполняются через helper по PolicyKit только после явного согласия.</p>
+        <p>Приватные SSH-ключи и authorized_keys включаются явными флагами CLI/GUI; добавлены интерактивный ввод пароля и файл пароля.</p>
+        <p>Единый сканер для scan/create с правилами приложений и XDG-каталогами; GUI получил предпросмотр, отмену, подтверждения и кнопку открытия отчёта.</p>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-10-26">
       <description>
         <p>Повторный запуск мастера показывает уже открытое окно, а не создаёт второе.</p>

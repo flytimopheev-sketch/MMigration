@@ -25,6 +25,7 @@ pub mod backup;
 pub mod compatibility;
 pub mod config;
 pub mod conflict_resolver;
+pub mod cron_jobs;
 pub mod packages;
 pub mod printers;
 pub mod profile_scanner;

@@ -3,20 +3,58 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [Не выпущено]
+## [0.2.0] — 2026-11-09
+
+Закрыты P0/P1 из [плана улучшений](migration-master/docs/IMPROVEMENTS.md).
+
+### Добавлено
+
+- **Пакеты**: список явно установленных пользователем пакетов сохраняется в
+  manifest (`dnf repoquery --userinstalled`, fallback `dnf history
+  userinstalled`; для dpkg — `apt-mark showmanual`). При восстановлении
+  показывается diff с целевой системой, установка — только по флагу
+  `--install-packages` через helper и PolicyKit.
+- **Принтеры CUPS**: имя, модель, URI, общий доступ и принтер по умолчанию
+  сохраняются в manifest; настройка через `migration-master-helper
+  configure-printers` только по флагу `--configure-printers`.
+- **dconf и cron**: дамп dconf и `crontab -l` сохраняются в manifest и
+  применяются от имени пользователя при `--apply-system-settings`.
+- **Приватные SSH-ключи и `authorized_keys`**: явные флаги CLI
+  `--include-private-ssh-keys`/`--include-authorized-keys` и галочки GUI с
+  подтверждением; после восстановления выставляются права `0700`/`0600`.
+- **Пароли CLI**: `--ask-passphrase` (интерактивный ввод) и
+  `--passphrase-file`, чтобы пароль не попадал в `argv` и историю оболочки.
+- **GUI**: подтверждение и индикатор стойкости пароля, генератор, предпросмотр
+  плана создания/восстановления/SSH, отмена операций, галочки применения
+  пакетов/принтеров/dconf+cron, итоговый экран с путём к отчёту и кнопкой
+  «Открыть отчёт».
+- **Автоматический backup в CLI `restore`** (отключается `--no-backup`).
+- **Единый сканер** для `scan` и `create`, включая пути правил приложений:
+  Firefox, Thunderbird, Git, `.bashrc`, `.zshrc` и другие.
+- **XDG-каталоги**: `Desktop`, `Documents` и т.п. читаются из
+  `user-dirs.dirs`, а не угадываются по локали.
+- **SSH**: экранирование удалённых путей, вывод отпечатка ключа, `rsync
+  --partial`, поддержка `--identity` и `--known-hosts`.
+
+### Исправлено
+
+- Стратегия `ask` больше не пропускает конфликты молча: в CLI с TTY она
+  спрашивает, без TTY возвращает понятную ошибку; в GUI по умолчанию выбран
+  безопасный `rename`, а `ask` заблокирован.
+- Компонент `custom_dirs` убран из списка компонентов и явно отклоняется:
+  он не был реализован и создавал ложное впечатление.
+- Компоненты `packages`, `printers`, `system_settings`, `cron_jobs` больше не
+  являются пустыми заготовками.
 
 ### Документация
 
-- Добавлено руководство [«Образ хоста без root»](migration-master/docs/HOST_IMAGE.md):
-  снимок пользовательского профиля, ручной перенос Firefox/Thunderbird/Git/GPG,
-  пакеты, принтеры, dconf и полный образ диска с root.
-- Добавлен [план улучшений](migration-master/docs/IMPROVEMENTS.md) по итогам
-  проверки 0.1.5: стратегия `ask`, нереализованные компоненты, приватные ключи,
-  backup в CLI, app rules и тесты.
-- Исправлены примеры `--passphrase` без значения, описание формата `.rmm`,
-  состав компонентов, внешние зависимости и статус PolicyKit в README,
-  USER_GUIDE, INSTALL, SECURITY, BACKUP, TROUBLESHOOTING и man-странице.
-- Man-страница обновлена до 0.1.5, исправлены несуществующие короткие опции.
+- Добавлено руководство [«Образ хоста без root»](migration-master/docs/HOST_IMAGE.md).
+- Обновлены README, ARCHITECTURE, BACKUP, INSTALL, SECURITY, TROUBLESHOOTING,
+  USER_GUIDE и man-страница: версия 0.2.0, новые флаги, формат manifest,
+  ограничения и статус helper.
+- [План улучшений](migration-master/docs/IMPROVEMENTS.md) отмечен по пунктам:
+  что вошло в 0.2.0 и что осталось необязательным.
+- RPM `%doc` включает новые руководства, добавлена запись changelog 0.2.0.
 
 ## [0.1.5] — 2026-10-26
 
@@ -118,6 +156,7 @@
 - Первая версия пакета: создание зашифрованных архивов, миграция по SSH,
   перенос настроек приложений и SSH-ключей, интеграция с CUPS.
 
+[0.2.0]: https://github.com/flytimopheev-sketch/MMigration/releases/tag/v0.2.0
 [0.1.5]: https://github.com/flytimopheev-sketch/MMigration/releases/tag/v0.1.5
 [0.1.4]: https://github.com/flytimopheev-sketch/MMigration/releases/tag/v0.1.4
 [0.1.3]: https://github.com/flytimopheev-sketch/MMigration/releases/tag/v0.1.3

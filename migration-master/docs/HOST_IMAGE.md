@@ -35,9 +35,10 @@ Migration Master не вызывает `sudo` для обычных операц
   сохраняются.
 
 Системные операции (установка RPM, настройка CUPS, запись в `/etc`) требуют
-root. В проекте есть отдельный `migration-master-helper` с белым списком
-команд и политикой PolicyKit, но в версии 0.1.5 он **не вызывается** из GUI и
-CLI: такие действия выполняются вручную (см. раздел 6).
+root. В 0.2.0 их выполняет отдельный `migration-master-helper` с белым списком
+команд и политикой PolicyKit через `pkexec` — только при явном флаге
+`--install-packages`/`--configure-printers` или соответствующей галочке GUI.
+Полный образ системы по-прежнему требует root и вручную (см. раздел 6).
 
 ## 3. Что реально попадает в архив
 
@@ -55,26 +56,25 @@ CLI: такие действия выполняются вручную (см. р
 
 ### Переносится частично или не переносится автоматически
 
-| Компонент | Фактическое состояние в 0.1.5 |
+| Компонент | Фактическое состояние в 0.2.0 |
 |---|---|
-| `printers` | копируется только пользовательский `~/.cups` (если есть). Системные принтеры в `/etc/cups` недоступны без root; список можно получить через `lpstat`, но автоматического восстановления принтеров нет |
-| `packages` | список пакетов **не попадает в архив**. Есть только команда `migration-master list-packages`; установка — вручную |
-| `system_settings` | модуль собран, но в поток создания/восстановления не подключён; `dconf`-дамп автоматически не снимается |
-| `cron_jobs` | файл-заготовка `~/.config/migration-master/crontab.txt` нигде не создаётся |
-| `custom_dirs` | путь не сканируется |
-| приватные SSH-ключи | по умолчанию исключаются; в 0.1.5 нет переключателя в CLI/GUI, только внутренний флаг `WizardConfig` |
-| `authorized_keys` | исключается по умолчанию; переключателя в CLI/GUI нет |
-| Firefox, Thunderbird, Git, `.bashrc`, `.zshrc` | **не попадают**: правила приложений задают эти пути, но сканер их не добавляет (они лежат вне `.config`/`.local/share`) |
+| `printers` | имя, модель, URI и принтер по умолчанию сохраняются в manifest; восстановление через helper по флагу `--configure-printers` (в GUI — галочка) |
+| `packages` | список явно установленных пакетов сохраняется в manifest; diff показывается при восстановлении, установка — через helper по флагу `--install-packages` |
+| `system_settings` | dconf снимается в manifest и применяется от имени пользователя; системные `/etc`-файлы вслепую не копируются |
+| `cron_jobs` | `crontab -l` сохраняется в manifest и применяется от имени пользователя при `--apply-system-settings` |
+| `custom_dirs` | зарезервирован, в список компонентов не входит; используйте правила приложений |
+| приватные SSH-ключи | исключаются по умолчанию; включаются флагом `--include-private-ssh-keys` или галочкой GUI |
+| `authorized_keys` | исключается по умолчанию; включается флагом `--include-authorized-keys` или галочкой GUI |
+| Firefox, Thunderbird, Git, `.bashrc`, `.zshrc` | попадают автоматически: правила приложений добавляют свои пути в скан |
 | Chromium/Chrome, VS Code, systemd, файловые менеджеры | попадают, потому что их пути уже внутри `~/.config` или `~/.local/share` |
 
 Исключаются по умолчанию: кэши, `Trash`, временные файлы, `.git`,
 `node_modules`, `venv`, `__pycache__`, `*.pyc`, `*.swp` и подобное. Полный
 список — `DEFAULT_EXCLUSIONS` в `src/config/mod.rs`.
 
-> `migration-master scan` использует другой сканер, чем `create`: он показывает
-> только домашние каталоги и не учитывает `.cups`, systemd-юниты и
-> файлы-заготовки. Для проверки реального состава архива используйте
-> `migration-master inspect`.
+> Начиная с 0.2.0 `migration-master scan` и `create` используют один сканер,
+> поэтому состав и размеры совпадают. Для проверки уже готового архива
+> используйте `migration-master inspect` — он показывает файлы и метаданные.
 
 ## 4. Снимок пользовательского окружения (без root)
 
@@ -120,27 +120,23 @@ rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}\n' | sort > "$HOME/host-image/rpm-a
 ```bash
 COMPONENTS="desktop,documents,downloads,pictures,videos,music,templates,app_configs,app_data,local_bin,local_apps,themes,icons,fonts,ssh_keys,user_services,printers"
 
-read -rsp 'Пароль архива: ' RMM_PASS
-printf '\n'
-
 migration-master create \
   --output "$HOME/host-image/profile-$(date +%Y%m%d).rmm" \
   --components "$COMPONENTS" \
   --compression 6 \
-  --passphrase "$RMM_PASS"
-
-unset RMM_PASS
+  --ask-passphrase
 ```
 
 Важно:
 
-- `--passphrase` **требует значения**. Пример `create --passphrase` без пароля
-  из старых README не работает.
-- Пароль передаётся аргументом процесса и на время работы виден в `ps`/`top`
-  самому пользователю и root. Для максимальной гигиены создавайте архив через
-  GUI (поле пароля) или используйте временный пароль и меняйте его позже.
-- Без `--passphrase` архив создаётся **без шифрования** — не рекомендуется для
+- `--ask-passphrase` запрашивает пароль интерактивно и не оставляет его в
+  `argv`/истории оболочки. Альтернатива — `--passphrase-file` с файлом,
+  доступным только владельцу (`chmod 600`).
+- Без пароля архив создаётся **без шифрования** — не рекомендуется для
   флешки и сети.
+- Метаданные пакетов, принтеров, dconf и cron попадают в manifest при выборе
+  компонентов `packages`, `printers`, `system_settings`, `cron_jobs`; в
+  `COMPONENTS` выше они не включены, добавьте их при необходимости.
 
 ### Шаг 3. Дополнительные каталоги, которые не входят в компоненты
 
@@ -180,11 +176,8 @@ cd "$HOME/host-image"
 ARCHIVE=$(ls -1t ./*.rmm | head -n1)
 [ -n "$ARCHIVE" ] || { echo "Архив .rmm не найден"; exit 1; }
 
-read -rsp 'Пароль архива: ' RMM_PASS
-printf '\n'
-migration-master verify "$ARCHIVE" --passphrase "$RMM_PASS"
-migration-master inspect "$ARCHIVE" --passphrase "$RMM_PASS" > inspect.txt
-unset RMM_PASS
+migration-master verify "$ARCHIVE" --ask-passphrase
+migration-master inspect "$ARCHIVE" --ask-passphrase > inspect.txt
 
 sha256sum ./*.rmm > SHA256SUMS
 [ -f extra-settings.tar.zst.gpg ] && sha256sum extra-settings.tar.zst.gpg >> SHA256SUMS
@@ -219,22 +212,18 @@ sha256sum -c SHA256SUMS
 ARCHIVE=$(ls -1t ./*.rmm | head -n1)
 [ -n "$ARCHIVE" ] || { echo "Архив .rmm не найден"; exit 1; }
 
-read -rsp 'Пароль архива: ' RMM_PASS
-printf '\n'
-
-migration-master verify "$ARCHIVE" --passphrase "$RMM_PASS"
+migration-master verify "$ARCHIVE" --ask-passphrase
 
 migration-master restore "$ARCHIVE" \
   --target "$HOME" \
   --strategy rename \
   --dry-run \
-  --passphrase "$RMM_PASS"
+  --ask-passphrase
 ```
 
 `--strategy rename` в пробном запуске покажет, сколько файлов будет
-переименовано. Выполняйте блоки 2 и 3 в одном терминале, чтобы переменные
-`ARCHIVE` и `RMM_PASS` сохранились. Для реального восстановления используйте
-именно `rename` или `keep-both`, пока не убедитесь, что архив правильный:
+переименовано. Для реального восстановления используйте именно `rename` или
+`keep-both`, пока не убедитесь, что архив правильный:
 
 | Стратегия | Что делает |
 |---|---|
@@ -243,11 +232,11 @@ migration-master restore "$ARCHIVE" \
 | `keep-both` | сохраняет оба файла, новый получает суффикс |
 | `replace` | заменяет существующие файлы |
 | `newer` | заменяет, только если файл в архиве новее |
-| `ask` | **в 0.1.5 фактически работает как `skip`**: интерактивного диалога нет |
+| `ask` | спрашивает для каждого файла; только CLI с интерактивным TTY |
 
-> Это важно: в CLI и GUI по умолчанию выбрана стратегия `ask`, но обработчик
-> конфликтов не подключён, поэтому существующие файлы молча пропускаются.
-> Для восстановления выбирайте `rename` (безопасно) или `replace` (осознанно).
+> В GUI по умолчанию выбран безопасный `rename`; `ask` заблокирован, потому
+> что диалог для каждого файла ещё не реализован. В CLI `ask` без TTY
+> завершается ошибкой, а не пропускает файлы молча.
 
 ### Шаг 3. Восстановление
 
@@ -255,17 +244,16 @@ migration-master restore "$ARCHIVE" \
 migration-master restore "$ARCHIVE" \
   --target "$HOME" \
   --strategy rename \
-  --passphrase "$RMM_PASS"
-
-unset RMM_PASS
+  --ask-passphrase
 ```
 
-Если нужно восстановить только часть:
+CLI создаёт резервную копию перезаписываемых файлов автоматически;
+`--no-backup` отключает её. Если нужно восстановить только часть:
 
 ```bash
 migration-master restore "$ARCHIVE" --target "$HOME" \
   --components documents,app_configs,ssh_keys \
-  --strategy rename --passphrase "$RMM_PASS"
+  --strategy rename --ask-passphrase
 ```
 
 Дополнительный архив (потребуется пароль, заданный при `gpg -c`):
@@ -276,8 +264,11 @@ gpg -d extra-settings.tar.zst.gpg | tar -C "$HOME" --zstd -xvf -
 
 ### Шаг 4. Пакеты
 
-Список с исходного хоста — `packages.json`/`rpm-all.tsv`. На новом хосте
-сравните списки и установите только недостающее:
+Если при создании был выбран компонент `packages`, список уже есть в manifest.
+Установить его можно при восстановлении флагом `--install-packages` — helper
+покажет diff и запросит подтверждение через PolicyKit. Ручной путь ниже нужен,
+если флаг не использовался или в архиве есть только `packages.json`/`rpm-all.tsv`.
+Сравните списки и установите только недостающее:
 
 ```bash
 # Пакеты, которые пользователь ставил сам (dnf 4)
@@ -308,8 +299,10 @@ cat printers.txt          # что было на источнике
 lpstat -p -d              # что есть на новом хосте
 ```
 
-Автоматического восстановления нет. Добавьте принтеры через веб-интерфейс
-CUPS (`http://localhost:631`) или командой (нужен root или членство в группе
+Если при создании был выбран компонент `printers`, восстановление можно
+выполнить флагом `--configure-printers`: helper добавит принтеры через
+`lpadmin` и включит их. Ручной путь — веб-интерфейс CUPS
+(`http://localhost:631`) или команда (нужен root или членство в группе
 `lpadmin`):
 
 ```bash
@@ -320,9 +313,10 @@ URI берите из `lpstat -v` на исходном хосте.
 
 ### Шаг 6. Системные настройки
 
-- Пользовательские настройки GNOME/GTK обычно уже в `.config`/`dconf`.
-  Если нужно применить дамп отдельно: `dconf load / < dconf.ini` (после входа
-  в сессию; не запускайте при работающем приложении настроек).
+- Если выбран `system_settings`/`cron_jobs`, dconf и crontab применяются при
+  восстановлении с `--apply-system-settings` (в GUI — галочка) от имени
+  пользователя. Вручную: `dconf load / < dconf.ini` (после входа в сессию;
+  не запускайте при работающем приложении настроек).
 - Юниты systemd пользователя: `systemctl --user daemon-reload`, затем
   `systemctl --user enable --now <unit>`.
 - Шрифты: `fc-cache -f`.
@@ -385,18 +379,17 @@ UUID и initramfs после такого переноса нужно настр
 
 ## 7. Приватные SSH-ключи и секреты
 
-В 0.1.5 приватные ключи и `authorized_keys` нельзя включить через CLI/GUI.
-Если перенос необходим, скопируйте их вручную и сразу выставьте права:
+Приватные ключи и `authorized_keys` включаются только явно:
 
 ```bash
-install -d -m 700 "$HOME/.ssh"
-cp -a /media/OLD/ssh/id_ed25519 "$HOME/.ssh/"
-chmod 600 "$HOME/.ssh/id_ed25519"
-chmod 644 "$HOME/.ssh/id_ed25519.pub"
+migration-master create --output profile.rmm --ask-passphrase \
+  --include-private-ssh-keys --include-authorized-keys
 ```
 
-Аналогично для `authorized_keys` (`0600`). Не копируйте `.ssh` на чужой
-компьютер и не храните приватные ключи в незашифрованном архиве.
+В GUI это отдельные галочки, выключенные по умолчанию. После восстановления
+`~/.ssh` получает права `0700`, приватные ключи и `authorized_keys` — `0600`.
+Не копируйте `.ssh` на чужой компьютер и не храните приватные ключи в
+незашифрованном архиве.
 
 Помните, что `.config`, `.local/share` и дополнительные архивы могут содержать
 токены, cookies, пароли браузеров, keyring и GPG-ключи. Используйте стойкий
@@ -407,11 +400,15 @@ chmod 644 "$HOME/.ssh/id_ed25519.pub"
 - Нет инкрементальных архивов: каждый снимок полный.
 - Не сохраняются владелец, ACL, xattr, SELinux-контексты, capabilities,
   жёсткие ссылки и пустые каталоги; права файлов сохраняются, каталогов — нет.
-- Firefox/Thunderbird/Git/shell-конфиги нужно добавлять вручную (см. шаг 3).
-- Пакеты, принтеры и системные настройки автоматически не восстанавливаются.
-- `ask` в текущей версии не спрашивает, а пропускает конфликты.
-- CLI `restore` не делает автоматическую резервную копию (в отличие от GUI).
-- Пароль в CLI виден в списке процессов; в GUI — нет.
+- Firefox/Thunderbird/Git/shell-конфиги входят в скан через правила
+  приложений; каталоги вне правил (например, GPG) добавляйте отдельным архивом.
+- Пакеты и принтеры восстанавливаются только с явным флагом/галочкой через
+  helper; dconf и cron — с `--apply-system-settings`.
+- `ask` работает только в CLI с TTY; в GUI доступны `rename`/`replace`/`skip`/
+  `newer`.
+- CLI `restore` создаёт backup автоматически; отключается `--no-backup`.
+- Пароль, переданный через `--passphrase`, виден в списке процессов; в GUI,
+  `--ask-passphrase` и `--passphrase-file` — нет.
 - Архив не заменяет резервное копирование: перед восстановлением сохраните
   текущий `$HOME` отдельно.
 
@@ -419,12 +416,15 @@ chmod 644 "$HOME/.ssh/id_ed25519.pub"
 
 - [ ] Приложения закрыты, место проверено.
 - [ ] Основной `.rmm` создан с паролем и проверен `verify`.
-- [ ] Дополнительные каталоги (Firefox, Thunderbird, Git, GPG) зашифрованы.
+- [ ] При необходимости включены `--include-private-ssh-keys`/
+      `--include-authorized-keys`.
+- [ ] Дополнительные каталоги вне правил приложений (например, GPG) зашифрованы.
 - [ ] `SHA256SUMS` создан и проверен на носителе.
-- [ ] Пакеты, принтеры, Flatpak и dconf выгружены.
+- [ ] Пакеты, принтеры, Flatpak и dconf выгружены или включены в manifest.
 - [ ] На новом хосте выполнен `restore --dry-run`.
 - [ ] Реальное восстановление сделано со стратегией `rename`.
-- [ ] Пакеты/принтеры/системные настройки настроены вручную.
+- [ ] При необходимости использованы `--install-packages`,
+      `--configure-printers`, `--apply-system-settings`.
 - [ ] Выполнен повторный вход, проверены SSH-права и приложения.
 - [ ] Временные копии удалены.
 

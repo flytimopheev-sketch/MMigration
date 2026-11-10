@@ -9,19 +9,20 @@ Migration Master переносит **пользовательский проф�
 Программа работает от обычного пользователя и не требует root для создания
 архива и восстановления в свой домашний каталог.
 
-## Что реально переносится в 0.1.5
+## Что реально переносится в 0.2.0
 
 | Компонент | Состояние |
 |---|---|
-| `desktop`, `documents`, `downloads`, `pictures`, `videos`, `music`, `templates` | полностью |
-| `app_configs` (`~/.config`), `app_data` (`~/.local/share`) | полностью, кроме кэшей и исключений |
+| `desktop`, `documents`, `downloads`, `pictures`, `videos`, `music`, `templates` | полностью; пути читаются из XDG `user-dirs.dirs` |
+| `app_configs` (`~/.config`), `app_data` (`~/.local/share`) | полностью, кроме кэшей и исключений; сюда же добавляются пути правил приложений |
 | `local_bin`, `local_apps`, `themes`, `icons`, `fonts` | полностью |
-| `ssh_keys` | публичные ключи, `config`, `known_hosts`; приватные и `authorized_keys` — нет |
+| `ssh_keys` | публичные ключи, `config`, `known_hosts`; приватные ключи и `authorized_keys` — только с явным флагом |
 | `user_services` | файлы `~/.config/systemd/user` (без включения юнитов) |
-| `printers` | только пользовательский `~/.cups`; системные принтеры не восстанавливаются |
-| `packages` | только команда `list-packages`; в архив список не попадает |
-| `system_settings`, `cron_jobs`, `custom_dirs` | заготовки, автоматически не работают |
-| Firefox, Thunderbird, Git, `.bashrc`, `.zshrc` | **не попадают автоматически** (см. `HOST_IMAGE.md`) |
+| `printers` | имя, модель, URI и принтер по умолчанию в manifest; восстановление через helper по явному флагу |
+| `packages` | список явно установленных пакетов в manifest; diff и установка через helper по явному флагу |
+| `system_settings`, `cron_jobs` | dconf и crontab в manifest; применяются от имени пользователя после восстановления |
+| Firefox, Thunderbird, Git, `.bashrc`, `.zshrc` | попадают автоматически через правила приложений |
+| `custom_dirs` | зарезервирован и не отображается в списке компонентов; используйте правила приложений |
 
 Подробный разбор ограничений и планов — в [IMPROVEMENTS.md](IMPROVEMENTS.md).
 
@@ -36,9 +37,11 @@ Migration Master переносит **пользовательский проф�
 - владелец файлов из архива не применяется — это требует root и бессмысленно
   на другом компьютере. Права файлов (`0600` и т.п.) сохраняются.
 
-Для установки пакетов, настройки CUPS и записи в `/etc` нужен root. В проекте
-есть отдельный `migration-master-helper` с белым списком и PolicyKit, но в
-0.1.5 GUI/CLI его не вызывают: эти шаги выполняются вручную.
+Для установки пакетов, настройки CUPS и записи в `/etc` нужен root. Эти шаги
+выполняет отдельный `migration-master-helper` с белым списком через `pkexec`
+(PolicyKit) — только когда пользователь явно выбрал установку пакетов или
+настройку принтеров. GUI при этом остаётся запущенным от обычного пользователя.
+dconf и crontab применяются без root, от имени пользователя.
 
 ## Перед началом
 
@@ -60,8 +63,10 @@ Migration Master переносит **пользовательский проф�
 # Оценка без записи
 migration-master create --output profile.rmm --dry-run
 
-# Создание зашифрованного архива
-migration-master create --output profile.rmm --passphrase '...'
+# Создание зашифрованного архива (пароль вводится интерактивно)
+migration-master create --output profile.rmm --ask-passphrase
+# или из файла
+migration-master create --output profile.rmm --passphrase-file ~/.rmm-pass
 ```
 
 `--components` принимает `default`, `all` или список ключей:
@@ -69,48 +74,64 @@ migration-master create --output profile.rmm --passphrase '...'
 ```bash
 migration-master create --output profile.rmm \
   --components documents,app_configs,ssh_keys \
-  --passphrase '...'
+  --ask-passphrase
 ```
 
-`--passphrase` **требует значения**. Без него архив будет без шифрования.
-Пароль в командной строке виден в `ps` на время работы и остаётся в истории;
-для секретов используйте GUI или временный пароль.
+Приватные ключи и `authorized_keys` включаются только явно:
+
+```bash
+migration-master create --output profile.rmm --ask-passphrase \
+  --include-private-ssh-keys --include-authorized-keys
+```
+
+`--passphrase '<пароль>'` тоже работает, но пароль виден в `ps` и остаётся в
+истории оболочки. Предпочитайте `--ask-passphrase` или `--passphrase-file`.
 
 Проверка:
 
 ```bash
-migration-master verify profile.rmm --passphrase '...'
-migration-master inspect profile.rmm --passphrase '...'
+migration-master verify profile.rmm --ask-passphrase
+migration-master inspect profile.rmm --ask-passphrase
 ```
 
-`inspect` показывает реальный состав архива; `scan` для этого не подходит,
-потому что использует другой сканер и не видит часть путей.
+`inspect` показывает реальный состав архива и метаданные (пакеты, принтеры,
+dconf, cron); `scan` использует тот же сканер, что и `create`, поэтому их
+состав совпадает.
 
 ### Новый компьютер
 
 ```bash
 # Сначала всегда dry-run
 migration-master restore profile.rmm --target /home/user --dry-run \
-  --strategy rename --passphrase '...'
+  --strategy rename --ask-passphrase
 
-# Реальное восстановление
+# Реальное восстановление; backup создаётся автоматически
 migration-master restore profile.rmm --target /home/user \
-  --strategy rename --passphrase '...'
+  --strategy rename --ask-passphrase
 ```
 
 Рекомендуется `rename` (старый файл получает суффикс `.old`) или `keep-both`.
-Стратегия `replace` заменяет файлы, `skip` оставляет старые.
+Стратегия `replace` заменяет файлы, `skip` оставляет старые. `ask` спрашивает
+в терминале; без TTY команда завершится ошибкой. В GUI по умолчанию выбран
+`rename`, а `ask` недоступен.
 
-> CLI `restore` **не создаёт автоматическую резервную копию**. Она есть только
-> в GUI-мастере. Перед восстановлением в существующий `$HOME` сохраните его
-> отдельно или используйте `rename`.
+CLI `restore` создаёт backup по умолчанию; отключается только явным
+`--no-backup`.
 
 Восстановить только часть:
 
 ```bash
 migration-master restore profile.rmm --target /home/user \
   --components documents,app_configs,ssh_keys \
-  --strategy rename --passphrase '...'
+  --strategy rename --ask-passphrase
+```
+
+Установка пакетов, настройка принтеров и применение dconf/cron — только по
+явным флагам:
+
+```bash
+migration-master restore profile.rmm --target /home/user \
+  --install-packages --configure-printers --apply-system-settings
 ```
 
 ## Режим 2. Прямая миграция по SSH
@@ -147,8 +168,11 @@ migration-master migrate-ssh user@192.168.1.20 --components default
 | `themes`, `icons`, `fonts` | `~/.themes`, `~/.icons`, `~/.fonts`/`~/.local/share/fonts` |
 | `ssh_keys` | `~/.ssh` без приватных ключей и `authorized_keys` |
 | `user_services` | `~/.config/systemd/user` |
-| `printers` | `~/.cups` |
-| `packages`, `system_settings`, `cron_jobs`, `custom_dirs` | пока не реализованы |
+| `printers` | имя, модель, URI и принтер по умолчанию (восстановление через helper) |
+| `packages` | список явно установленных пакетов (установка через helper) |
+| `system_settings` | dconf и системные пути профиля (dconf применяется от пользователя) |
+| `cron_jobs` | `crontab -l` (применяется от пользователя) |
+| `custom_dirs` | зарезервирован; в список компонентов не входит |
 
 Список: `migration-master scan --components all`.
 
@@ -167,10 +191,10 @@ migration-master app-rules export
 migration-master app-rules import my.yaml
 ```
 
-Важно: в 0.1.5 правила используются для размеров, подсказок и исключений, но
-**не добавляют свои пути в скан**. Поэтому Firefox и Thunderbird нужно
-переносить отдельно (см. `HOST_IMAGE.md`). Chromium/Chrome и VS Code попадают
-в архив потому, что лежат внутри `~/.config`.
+Правила не только задают размеры, подсказки и исключения, но и **добавляют
+свои пути в скан**: при выборе `app_configs`/`app_data` в архив попадают
+`.mozilla/firefox`, `.thunderbird`, `.gitconfig`, `.bashrc`, `.zshrc` и другие
+включённые пути. Chromium/Chrome и VS Code также попадают в архив.
 
 Выключенное правило (`enabled: false`) исключает свои пути из сканирования.
 
@@ -184,30 +208,30 @@ migration-master app-rules run-hooks --confirm
 
 | Значение | Поведение |
 |---|---|
-| `ask` | в 0.1.5 **фактически пропускает** файл: интерактивного диалога нет |
+| `ask` | спросить для каждого файла (только CLI с интерактивным TTY) |
 | `skip` | оставить существующий |
 | `replace` | заменить |
 | `keep-both` | сохранить оба (суффикс у нового) |
 | `rename` (`rename-old`) | переименовать старый в `.old` |
 | `newer` | заменить только если в архиве новее |
 
-GUI по умолчанию выбирает `ask` (индекс 0), CLI тоже. Это известная проблема:
-выбирайте `rename` или `replace` осознанно. Резервная копия перед заменой
-создаётся **только в GUI-мастере**, не в CLI.
+CLI по умолчанию использует `ask`: в терминале он спрашивает, без TTY
+завершается понятной ошибкой. GUI по умолчанию выбирает безопасный `rename`,
+а `ask` блокирует с пояснением. Резервная копия перед заменой создаётся и в
+GUI, и в CLI (в CLI отключается `--no-backup`).
 
 ## Приватные SSH-ключи
 
-По умолчанию приватные ключи и `authorized_keys` не переносятся. В 0.1.5
-переключателя в CLI/GUI нет: внутренние флаги `WizardConfig` недоступны
-пользователю. Если ключи нужны, скопируйте их вручную и выставьте права:
+По умолчанию приватные ключи и `authorized_keys` не переносятся. Включить их
+можно только явно — флагами CLI:
 
 ```bash
-install -d -m 700 "$HOME/.ssh"
-cp -a /media/OLD/ssh/id_ed25519 "$HOME/.ssh/"
-chmod 600 "$HOME/.ssh/id_ed25519"
-chmod 644 "$HOME/.ssh/id_ed25519.pub"
+migration-master create --output profile.rmm --ask-passphrase \
+  --include-private-ssh-keys --include-authorized-keys
 ```
 
+или галочками на странице создания архива в GUI. После восстановления
+`~/.ssh` получает права `0700`, приватные ключи и `authorized_keys` — `0600`.
 Не храните приватные ключи в незашифрованном архиве. Подробнее —
 [Безопасность](SECURITY.md).
 
@@ -220,18 +244,21 @@ migration-master gui
 Главный экран показывает пользователя, ОС, размер профиля, свободное место и
 доступность утилит. Действия:
 
-- **Создать архив профиля** — путь архива, пароль, сжатие, компоненты,
-  dry-run;
+- **Создать архив профиля** — путь архива, пароль с подтверждением и
+  индикатором стойкости, генератор пароля, сжатие, компоненты, dry-run,
+  приватные SSH-ключи и `authorized_keys`, предпросмотр состава;
 - **Передача по SSH** — адрес, пользователь, порт, удалённый `$HOME`,
-  компоненты;
+  компоненты, приватный ключ, предпросмотр;
 - **Восстановить из архива** — архив, каталог восстановления, пароль,
-  стратегия конфликтов, проверка хешей, dry-run;
+  стратегия конфликтов, проверка хешей, dry-run, предпросмотр, галочки
+  установки пакетов/настройки принтеров/dconf+cron;
 - **История операций** и **Диагностика**.
 
-Это не пошаговый мастер с экраном предпросмотра: форма запускает операцию
-сразу. По умолчанию выбрана стратегия `ask`, которая в 0.1.5 молча
-пропускает конфликты, поэтому перед восстановлением переключите её на
-`rename`. Автоматическая резервная копия в GUI создаётся.
+Долгие операции можно отменить кнопкой; итоговый экран показывает числа
+восстановленных/пропущенных файлов, ошибки, предупреждения, рекомендации и
+путь к отчёту. По умолчанию выбрана безопасная стратегия `rename`; `ask`
+блокируется, потому что диалог для каждого файла в GUI не реализован.
+Автоматическая резервная копия создаётся.
 
 ## После восстановления
 
@@ -241,9 +268,11 @@ migration-master gui
    `systemctl --user enable --now <unit>`.
 4. Меню: `update-desktop-database ~/.local/share/applications` (если есть).
 5. SSH: `stat -c '%a %n' ~/.ssh ~/.ssh/id_*` — каталог `0700`, ключи `0600`.
-6. Проверьте браузер, почту, Git и терминал. Firefox/Thunderbird, Git и
-   shell-конфиги нужно было добавить отдельным архивом.
-7. Пакеты и принтеры установите/настройте вручную (см. `HOST_IMAGE.md`).
+6. Проверьте браузер, почту, Git и терминал — их настройки входят в
+   `app_configs`/`app_data` через правила приложений.
+7. Если не использовались флаги `--install-packages` и
+   `--configure-printers`, установите пакеты и настройте принтеры вручную
+   (см. `HOST_IMAGE.md`); иначе проверьте результат в отчёте.
 
 ## История и отчёты
 
@@ -262,16 +291,16 @@ migration-master config list
 ```bash
 # 1. Старый ПК
 migration-master scan --json > scan.json
-migration-master create --output profile.rmm --passphrase '...'
-migration-master verify profile.rmm --passphrase '...'
+migration-master create --output profile.rmm --ask-passphrase
+migration-master verify profile.rmm --ask-passphrase
 
 # 2. Перенести profile.rmm на новый ПК
 
 # 3. Новый ПК
 migration-master restore profile.rmm --target /home/user --dry-run \
-  --strategy rename --passphrase '...'
+  --strategy rename --ask-passphrase
 migration-master restore profile.rmm --target /home/user \
-  --strategy rename --passphrase '...'
+  --strategy rename --ask-passphrase
 migration-master report --format txt
 ```
 

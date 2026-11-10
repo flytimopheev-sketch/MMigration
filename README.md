@@ -48,16 +48,23 @@
 - 🔗 **Прямая миграция по SSH** — `scp` (или `rsync`, если установлен) по SSH,
   проверка host key вручную, отмена по Ctrl+C
 - 📦 **Компоненты переноса** — документы, загрузки, фото, видео, музыка,
-  шаблоны, настройки приложений, SSH-ключи. Пакеты и системные настройки
-  автоматически не переносятся; принтеры — только `~/.cups`. См.
-  [ограничения](migration-master/docs/IMPROVEMENTS.md)
-- 🖨 **Принтеры CUPS** — список через `lpstat` и пользовательский `~/.cups`;
-  автоматическое восстановление принтеров пока не реализовано
-- 📋 **Список пакетов** — `migration-master list-packages`; в архив список не
-  попадает, установка выполняется вручную или через будущий helper
+  шаблоны, настройки и данные приложений (включая Firefox, Thunderbird, Git и
+  shell-конфиги), SSH-ключи. Каталоги XDG (`Desktop`, `Documents` и т.п.)
+  читаются из `user-dirs.dirs`, а не угадываются по локали
+- 🖨 **Принтеры CUPS** — имя, модель, URI и принтер по умолчанию сохраняются в
+  manifest; восстановление через `lpadmin`/`cupsenable` выполняется помощником
+  `migration-master-helper` по PolicyKit и только при явном флаге/галочке
+- 📋 **Пакеты** — в архив попадает список явно установленных пользователем
+  пакетов (`dnf repoquery --userinstalled`, fallback `dnf history
+  userinstalled`; для dpkg — `apt-mark showmanual`). При восстановлении
+  показывается разница с целевой системой, установка — только по явному
+  подтверждению через помощник
+- ⚙️ **Настройки пользователя** — dconf и crontab сохраняются в manifest;
+  dconf/cron применяются от имени пользователя, а системные компоненты — через
+  помощник по PolicyKit
 - 🛡 **Безопасность** — защита от path traversal, атомарная запись файлов,
-  заготовка привилегированного помощника с белым списком (PolicyKit; в 0.1.5
-  не вызывается из GUI)
+  привилегированный помощник с белым списком команд; GUI никогда не запускается
+  от root и вызывает `pkexec` только для явно подтверждённых операций
 - 🗂 **История и отчёты** — журнал операций в SQLite, отчёты в JSON/HTML/TXT
 - 🖥 **Графический мастер** — GTK4 + libadwaita: главный экран, создание
   архива, перенос по SSH, восстановление, история и диагностика
@@ -83,7 +90,7 @@
 ### РЕД ОС 8 (x86_64)
 
 ```bash
-sudo dnf install ./migration-master-0.1.5-1.x86_64.rpm
+sudo dnf install ./migration-master-0.2.0-1.x86_64.rpm
 migration-master gui        # графический мастер
 ```
 
@@ -107,8 +114,8 @@ cargo test  --release                  # юнит-тесты
 
 ```bash
 migration-master scan --quick                 # что есть в профиле и каких утилит не хватает
-migration-master create --output profile.rmm --passphrase '...'
-migration-master verify profile.rmm --passphrase '...'
+migration-master create --output profile.rmm --ask-passphrase
+migration-master verify profile.rmm --ask-passphrase
 migration-master restore profile.rmm --target /home/user --strategy rename
 migration-master migrate-ssh user@192.168.1.10 --dry-run
 migration-master report --format html
@@ -154,7 +161,7 @@ profile.rmm
 | OpenSSH (`ssh`, `scp`) | — | прямая миграция по SSH |
 | `rsync` | — | необязательно: быстрее SSH-передача |
 | CUPS (`lpstat`) | — | необязательно: список принтеров |
-| `pkexec` + polkit | — | необязательно: будущие привилегированные операции |
+| `pkexec` + polkit | — | установка пакетов и настройка принтеров через помощник |
 | `tar`, `zstd`, `gpg` | — | необязательно: ручные дополнительные архивы |
 
 Сами `.rmm` создаются Rust-библиотеками (`tar`, `zstd`, `age`), внешние
@@ -168,7 +175,7 @@ profile.rmm
 | [Установка](migration-master/docs/INSTALL.md) | RPM и сборка из исходников, внешние утилиты |
 | [Руководство пользователя](migration-master/docs/USER_GUIDE_RU.md) | оба режима миграции, компоненты, конфликты |
 | [Образ хоста без root](migration-master/docs/HOST_IMAGE.md) | снимок профиля, ручные дополнения, полный образ диска |
-| [План улучшений](migration-master/docs/IMPROVEMENTS.md) | найденные ограничения и приоритеты следующего релиза |
+| [План улучшений](migration-master/docs/IMPROVEMENTS.md) | что вошло в 0.2.0 и что осталось на будущее |
 | [Сборка RPM](migration-master/docs/BUILD_RPM.md) | `rpmbuild`, `%check`, варианты сборки, проверка пакета |
 | [Устранение неполадок](migration-master/docs/TROUBLESHOOTING.md) | типовые ошибки, диагностика GUI и CLI |
 | [Безопасность](migration-master/docs/SECURITY.md) | модель угроз, шифрование, path traversal, polkit |
@@ -195,13 +202,17 @@ cargo test --all-features
 
 Готово и покрыто тестами: ядро архивов (создание/просмотр/проверка/восстановление),
 шифрование age, защита от path traversal, атомарная запись, режим `dry-run`,
-перенос по SSH (scp/rsync), группы файловых компонентов, история в SQLite,
-отчёты, графический мастер и резервное копирование в GUI.
+перенос по SSH (scp/rsync с `--partial`), группы файловых компонентов,
+метаданные приложений, пакетов, принтеров, dconf и cron, история в SQLite,
+отчёты, графический мастер с предпросмотром, отменой и резервным копированием.
 
-Развивается: интерактивное разрешение конфликтов (сейчас `ask` пропускает
-файлы), перенос Firefox/Thunderbird/Git/shell-настроек, пакеты, принтеры,
-системные настройки и cron, экран предпросмотра. Подробности и приоритеты —
-в [IMPROVEMENTS.md](migration-master/docs/IMPROVEMENTS.md).
+В 0.2.0 закрыты P0/P1 из плана улучшений: интерактивный `ask` в CLI (в GUI
+безопасный `rename`), явные флаги приватных SSH-ключей и `authorized_keys`,
+применение dconf/cron, установка пакетов и настройка принтеров через помощник,
+единый скан для `scan` и `create`, автоматический backup в CLI. Остались
+необязательные улучшения: полноценный диалог конфликтов в GUI, ACL/xattr/
+SELinux в архиве и расширенные e2e-тесты — см.
+[IMPROVEMENTS.md](migration-master/docs/IMPROVEMENTS.md).
 
 ## Лицензия
 

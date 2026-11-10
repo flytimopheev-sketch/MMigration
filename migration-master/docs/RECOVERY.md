@@ -19,7 +19,7 @@ Migration Master **никогда не удаляет исходный проф�
 migration-master report --format txt --limit 5
 
 # Что реально записано (dry-run покажет план)
-migration-master restore profile.rmm --target /home/user --dry-run --passphrase '...'
+migration-master restore profile.rmm --target /home/user --dry-run --ask-passphrase
 ```
 
 Статусы в отчёте: `успешно`, `с ошибками`, `отменено`.
@@ -29,7 +29,7 @@ migration-master restore profile.rmm --target /home/user --dry-run --passphrase 
 ### Ошибка «повреждённый архив» / checksum mismatch
 
 ```bash
-migration-master verify profile.rmm --passphrase '...'
+migration-master verify profile.rmm --ask-passphrase
 ```
 
 Если `verify` падает — архив повреждён на этапе переноса. Пересоздайте его на
@@ -83,15 +83,14 @@ ssh -v user@host                                    # проверка вруч�
 Если восстановление прошло с ошибками и файлы испорчены:
 
 ```bash
-# 1. Резервные копии, созданные GUI-мастером до перезаписи
+# 1. Резервные копии, созданные GUI-мастером или CLI restore до перезаписи
 #    (каталог: ~/.local/share/migration-master/backups)
 #    найдите последнюю копию и восстановите её обычным распаковщиком
 #    либо через manifest.json внутри копии.
-#    Внимание: CLI restore такие копии не создаёт.
 
 # 2. Если резервной копии нет — восстановите из архива заново с
 #    безопасной стратегией:
-migration-master restore profile.rmm --target /home/user --strategy rename --passphrase '...'
+migration-master restore profile.rmm --target /home/user --strategy rename --ask-passphrase
 ```
 
 Стратегия `rename` сохраняет повреждённые файлы как `*.old` — их можно

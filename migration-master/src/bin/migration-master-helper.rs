@@ -38,6 +38,8 @@ enum HelperCommand {
     },
     /// Установить права (только для системных путей)
     SetMode { path: PathBuf, mode: u32 },
+    /// Настроить принтеры CUPS (поля: имя\\tURI\\tмодель\\tпо умолчанию)
+    ConfigurePrinters { printers: Vec<String> },
 }
 
 /// Префиксы каталогов, из которых разрешено копирование.
@@ -82,7 +84,7 @@ fn run(command: HelperCommand) -> Result<(), String> {
             };
 
             command.args(&packages);
-            exec(command)
+            exec(&mut command)
         }
         HelperCommand::InstallPolicy { path } => {
             if !path.is_file() {
@@ -93,7 +95,7 @@ fn run(command: HelperCommand) -> Result<(), String> {
             command.args(["-m", "644"]);
             command.arg(&path);
             command.arg(target);
-            exec(command)
+            exec(&mut command)
         }
         HelperCommand::CopySystem {
             source,
@@ -119,10 +121,60 @@ fn run(command: HelperCommand) -> Result<(), String> {
                 Ok(())
             }
         }
+        HelperCommand::ConfigurePrinters { printers } => {
+            for spec in &printers {
+                configure_printer(spec)?;
+            }
+            Ok(())
+        }
     }
 }
 
-fn exec(mut command: Command) -> Result<(), String> {
+fn configure_printer(spec: &str) -> Result<(), String> {
+    let fields: Vec<&str> = spec.split('\t').collect();
+    if fields.len() != 4 {
+        return Err("некорректное описание принтера".to_string());
+    }
+    let name = fields[0].trim();
+    let uri = fields[1].trim();
+    let model = fields[2].trim();
+    let make_default = fields[3].trim() == "1";
+
+    if name.is_empty()
+        || name.len() > 127
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(format!("недопустимое имя принтера: {:?}", name));
+    }
+    if uri.is_empty()
+        || uri.len() > 2048
+        || uri.chars().any(|c| c.is_control())
+        || !uri.contains(':')
+    {
+        return Err(format!("недопустимый URI принтера: {:?}", uri));
+    }
+    if model.len() > 255 || model.chars().any(|c| c.is_control()) {
+        return Err(format!("недопустимая модель принтера: {:?}", model));
+    }
+
+    let mut command = Command::new("lpadmin");
+    command.args(["-p", name, "-v", uri, "-E"]);
+    if !model.is_empty() {
+        command.args(["-m", model]);
+    }
+    exec(&mut command)?;
+
+    exec(Command::new("cupsenable").arg(name))?;
+    exec(Command::new("cupsaccept").arg(name))?;
+    if make_default {
+        exec(Command::new("lpadmin").args(["-d", name]))?;
+    }
+    Ok(())
+}
+
+fn exec(command: &mut Command) -> Result<(), String> {
     command.stdin(Stdio::null());
     let status = command
         .status()
