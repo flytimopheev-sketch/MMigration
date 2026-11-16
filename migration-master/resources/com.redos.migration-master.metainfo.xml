@@ -54,6 +54,13 @@
   <update_contact>team@redos.local</update_contact>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-11-16">
+      <description>
+        <p>Безопасная привилегированная миграция по SSH: подключение обычным администратором по ключу, preflight без sudo, staging с правами 0700 и применение от root через sudo.</p>
+        <p>Пароль sudo вводится пользователем, передаётся только в stdin и не сохраняется в argv, журналах, отчётах или файлах; добавлены флаги --target-user, --sudo, --ask-sudo-password и поля GUI.</p>
+        <p>Apply-скрипт проверяет домашний каталог через getent/realpath, создаёт резервную копию, выставляет владельца и права .ssh и запускает restorecon при наличии SELinux.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-09">
       <description>
         <p>Пакеты, принтеры, dconf и cron сохраняются в manifest; установка пакетов и настройка принтеров выполняются через helper по PolicyKit только после явного согласия.</p>

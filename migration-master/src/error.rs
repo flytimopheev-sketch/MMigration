@@ -114,6 +114,12 @@ pub enum MigrationError {
     #[error("Требуются права администратора: {0}")]
     PrivilegedRequired(String),
 
+    #[error("Требуется sudo: {0}")]
+    SudoRequired(String),
+
+    #[error("Операция не завершена: {0}")]
+    OperationFailed(String),
+
     #[error("Неизвестная ошибка: {0}")]
     Unknown(String),
 }
@@ -128,6 +134,7 @@ impl MigrationError {
             | Self::PermissionDenied(_)
             | Self::Unsupported(_)
             | Self::PrivilegedRequired(_)
+            | Self::SudoRequired(_)
             | Self::FileNotFound(_) => ErrorCategory::Environment,
             Self::Cancelled => ErrorCategory::Cancelled,
             _ => ErrorCategory::Internal,
@@ -150,6 +157,11 @@ impl MigrationError {
                 "Для действия «{}» нужны права администратора. Запрос будет выполнен через polkit.",
                 action
             ),
+            Self::SudoRequired(message) => format!(
+                "Для выполнения операции на удалённом хосте нужен sudo: {}",
+                message
+            ),
+            Self::OperationFailed(summary) => format!("Операция не завершена:\n{}", summary),
             other => other.to_string(),
         }
     }

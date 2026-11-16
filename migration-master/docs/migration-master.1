@@ -1,4 +1,4 @@
-.TH MIGRATION-MASTER 1 "2026-11-09" "Migration Master 0.2.0" "Команды пользователя"
+.TH MIGRATION-MASTER 1 "2026-11-16" "Migration Master 0.3.0" "Команды пользователя"
 
 .SH ИМЯ
 migration-master \- Мастер миграции пользователя для РЕД ОС Linux
@@ -119,7 +119,14 @@ ask спрашивает только в интерактивном TTY, ина�
 .br
 \fB\-\-home\fR           Домашний каталог источника
 .br
-\fB\-\-remote\-home\fR   Домашний каталог на удалённом хосте
+\fB\-\-remote\-home\fR   Домашний каталог на удалённом хосте; \fB~\fR разворачивается
+.br
+\fB\-\-target\-user\fR   Владелец файлов на приёмнике (по умолчанию владелец каталога
+или пользователь SSH)
+.br
+\fB\-\-sudo\fR           Разрешить sudo, если прав администратора недостаточно
+.br
+\fB\-\-ask\-sudo\-password\fR  Интерактивно запросить пароль sudo (не сохраняется)
 .br
 \fB\-\-components\fR     Компоненты [по умолчанию default]
 .br
@@ -131,8 +138,16 @@ ask спрашивает только в интерактивном TTY, ина�
 .br
 \fB\-\-include\-authorized\-keys\fR   Передавать authorized_keys
 .br
-\fB\-\-dry\-run\fR       Проверка соединения и плана без передачи
+\fB\-\-dry\-run\fR       Подключиться и выполнить read-only preflight без передачи
 .RE
+.PP
+Подключение выполняется обычным администратором по SSH-ключу, без root-входа.
+Если preflight показывает, что прав на целевой каталог недостаточно, данные
+складываются в staging с правами 0700 и применяются от root через sudo.
+Пароль sudo передаётся только в stdin и не попадает в argv, журналы и отчёты.
+Целевой каталог должен совпадать с домашним каталогом пользователя из
+\fBgetent passwd\fR; для режима sudo на приёмнике нужны \fBrsync\fR,
+\fBrealpath\fR, \fBgetent\fR, \fB/bin/bash\fR и \fB/usr/bin/sudo\fR.
 
 .TP
 .B list\-packages
@@ -220,8 +235,14 @@ migration-master restore backup.rmm --target /home/user --strategy rename --ask-
 migration-master restore backup.rmm --target /home/user \
   --install-packages --configure-printers --apply-system-settings
 
-# Прямая миграция по SSH
-migration-master migrate-ssh user@192.168.1.100 --dry-run
+# Прямая миграция по SSH (сначала проверка без изменений)
+migration-master migrate-ssh admin@192.168.1.100 \
+  --remote-home /home/timopheevsi --target-user timopheevsi --dry-run
+
+# Привилегированная миграция: пароль sudo вводится интерактивно
+migration-master migrate-ssh admin@192.168.1.100 \
+  --remote-home /home/timopheevsi --target-user timopheevsi \
+  --sudo --ask-sudo-password
 
 # Отчёт по истории миграций
 migration-master report --format html --limit 50
@@ -246,6 +267,10 @@ migration-master gui
 (path traversal). Помощник migration-master-helper с белым списком PolicyKit
 вызывается через pkexec только при явных \fB\-\-install\-packages\fR,
 \fB\-\-configure\-printers\fR; GUI остаётся запущенным от пользователя.
+В SSH-режиме sudo пароль передаётся только в stdin (\fBsudo \-S\fR), хранится
+в очищаемой памяти и не пишется на диск; staging имеет права 0700, а
+apply\-скрипт проверяет целевой домашний каталог через \fBgetent\fR и
+\fBrealpath\fR.
 
 .SH ОГРАНИЧЕНИЯ
 Стратегия ask спрашивает только в интерактивном TTY; в GUI она заблокирована,

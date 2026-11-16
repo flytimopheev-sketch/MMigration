@@ -5,7 +5,7 @@
 ## Способ 1. RPM-пакет (рекомендуется)
 
 ```bash
-sudo dnf install ./migration-master-0.2.0-1.x86_64.rpm
+sudo dnf install ./migration-master-0.3.0-1.x86_64.rpm
 ```
 
 Пакет устанавливает:
@@ -56,6 +56,9 @@ rpm -qR migration-master | grep -E 'gtk|adwaita'
 
 ### Зависимости
 
+Нужен Rust 1.89+ (`rustc --version`). Если системный toolchain старее,
+установите актуальный через [rustup](https://rustup.rs/).
+
 ```bash
 sudo dnf install rust cargo gcc make pkgconf-pkg-config \
                  gtk4-devel libadwaita-devel sqlite-devel \
@@ -63,7 +66,9 @@ sudo dnf install rust cargo gcc make pkgconf-pkg-config \
 ```
 
 Для GUI нужны GTK4 ≥ 4.0 и libadwaita ≥ 1.0 (devel-пакеты: `gtk4-devel`,
-`libadwaita-devel`).
+`libadwaita-devel`). Для привилегированной миграции по SSH на **приёмнике**
+нужны `openssh-server`, `sudo`, `rsync`, `getent` (glibc) и `realpath`
+(coreutils); на источнике требуется SSH-клиент.
 
 ### Сборка и установка
 
@@ -97,7 +102,8 @@ migration-master gui
 | Инструмент | Обязателен | Назначение |
 |---|---|---|
 | `ssh`, `scp` (OpenSSH) | да (только для SSH-режима) | прямая миграция по SSH |
-| `rsync` | нет | ускоренная передача; иначе используется `scp` |
+| `rsync` | нет | ускоренная передача и проверка; при отсутствии на приёмнике используется `scp`; обязателен для режима sudo |
+| `sudo`, `getent`, `realpath`, `/bin/bash` | нет | привилегированный staging + apply на приёмнике |
 | `lpstat`, CUPS | нет | сохранение списка принтеров; восстановление требует `pkexec` + helper |
 | `pkexec` (polkit) | нет | установка пакетов и настройка принтеров через helper |
 | `tar`, `zstd`, `gpg`, `age` | нет | ручные дополнительные архивы, не нужны самой программе |

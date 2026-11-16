@@ -15,7 +15,7 @@ use crate::packages::PackageManager;
 use crate::printers::PrinterManager;
 use crate::profile_scanner::ProfileScanner;
 use crate::report::{render_history_html, render_history_json, render_history_text, ReportFormat};
-use crate::ssh_transfer::{SshTarget, SshTransfer};
+use crate::ssh_transfer::{default_remote_home, SecretString, SshTarget, SshTransfer};
 use crate::wizard::{MigrationWizard, WizardConfig};
 
 /// Разбор интерфейса командной строки.
@@ -240,6 +240,15 @@ pub enum Commands {
         /// Домашний каталог на удалённом хосте
         #[arg(long)]
         remote_home: Option<String>,
+        /// Пользователь-владелец файлов на удалённом хосте
+        #[arg(long)]
+        target_user: Option<String>,
+        /// Разрешить sudo, если прав администратора недостаточно
+        #[arg(long)]
+        sudo: bool,
+        /// Запросить пароль sudo интерактивно (не сохраняется)
+        #[arg(long = "ask-sudo-password")]
+        ask_sudo_password: bool,
         /// Компоненты через запятую (default, all или список ключей)
         #[arg(long, default_value = "default")]
         components: String,
@@ -862,6 +871,9 @@ impl Cli {
                 port,
                 home,
                 remote_home,
+                target_user,
+                sudo,
+                ask_sudo_password,
                 components,
                 identity,
                 known_hosts,
@@ -873,6 +885,28 @@ impl Cli {
                 let source_home = home.unwrap_or_else(default_home);
                 let mut ssh = parse_ssh_target(&target, port, identity)?;
                 ssh.known_hosts_file = known_hosts;
+
+                let sudo_password = if ask_sudo_password && !dry_run {
+                    use std::io::IsTerminal;
+
+                    if !std::io::stdin().is_terminal() {
+                        return Err(MigrationError::InvalidInput(
+                            "для --ask-sudo-password нужен терминал".to_string(),
+                        ));
+                    }
+                    let password = rpassword::prompt_password(format!(
+                        "Пароль sudo для {}@{}: ",
+                        ssh.user, ssh.host
+                    ))?;
+                    if password.is_empty() {
+                        return Err(MigrationError::InvalidInput(
+                            "пароль sudo не может быть пустым".to_string(),
+                        ));
+                    }
+                    Some(SecretString::new(password))
+                } else {
+                    None
+                };
 
                 println!(
                     "Подключение: {}@{}:{}",
@@ -895,16 +929,19 @@ impl Cli {
                     Err(error) => eprintln!("  отпечаток: {}", error),
                 }
 
-                let remote_home = remote_home.unwrap_or_else(|| {
-                    if ssh.user.is_empty() {
-                        "~".to_string()
-                    } else {
-                        format!("/home/{}", ssh.user)
-                    }
-                });
+                let remote_home = remote_home
+                    .unwrap_or_else(|| default_remote_home(&ssh.user, target_user.as_deref()));
 
                 if dry_run {
-                    println!("[dry-run] передача не выполняется; цель: {}", remote_home);
+                    println!(
+                        "[dry-run] передача не выполняется; цель: {}; sudo: {}",
+                        remote_home,
+                        if sudo || ask_sudo_password {
+                            "разрешён"
+                        } else {
+                            "запрещён"
+                        }
+                    );
                 } else {
                     SshTransfer::new(ssh.clone()).check_connection()?;
                     println!("Соединение установлено. Начинаю передачу…");
@@ -915,6 +952,9 @@ impl Cli {
                 wizard_config.components = components;
                 wizard_config.app_rules = crate::applications::load_effective_rules();
                 wizard_config.ssh = Some(ssh);
+                wizard_config.target_user = target_user;
+                wizard_config.use_sudo = sudo || ask_sudo_password;
+                wizard_config.sudo_password = sudo_password;
                 wizard_config.include_private_ssh_keys = include_private_ssh_keys;
                 wizard_config.include_authorized_keys = include_authorized_keys;
                 wizard_config.dry_run = dry_run;
@@ -930,10 +970,30 @@ impl Cli {
                     report.stats.bytes_copied,
                     report.status()
                 );
+                for warning in &report.warnings {
+                    eprintln!("  предупреждение: {}", warning);
+                }
+                for recommendation in &report.recommendations {
+                    println!("  рекомендация: {}", recommendation);
+                }
                 for error in &report.errors {
                     eprintln!("  ошибка: {}", error);
                 }
-                Ok(())
+                if report.is_success() && !report.cancelled {
+                    Ok(())
+                } else {
+                    let detail = if report.cancelled {
+                        "операция отменена пользователем".to_string()
+                    } else if report.errors.is_empty() {
+                        "неизвестная ошибка".to_string()
+                    } else {
+                        report.errors.join("; ")
+                    };
+                    Err(MigrationError::OperationFailed(format!(
+                        "операция завершилась с ошибкой: {}",
+                        detail
+                    )))
+                }
             }
             Commands::Report {
                 output,

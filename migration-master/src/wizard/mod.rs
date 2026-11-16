@@ -15,7 +15,7 @@
 //! * операция попадает в историю SQLite и сохраняется в отчёте (§17).
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +35,10 @@ use crate::platform;
 use crate::printers::PrinterManager;
 use crate::report::{MigrationReport, ReportFormat};
 use crate::ssh_keys::SshKeysScanner;
-use crate::ssh_transfer::{SshTarget, SshTransfer, SshTransferOptions};
+use crate::ssh_transfer::{
+    local_rsync_available, ApplyStagedOptions, SecretString, SshAccessMode, SshPreflight,
+    SshTarget, SshTransfer, SshTransferOptions,
+};
 use crate::system_settings::SystemSettings;
 
 /// Версия формата сохраняемого состояния мастера.
@@ -170,6 +173,15 @@ pub struct WizardConfig {
     pub passphrase: Option<String>,
     /// Подключение SSH (для SshDirect)
     pub ssh: Option<SshTarget>,
+    /// Целевой пользователь-владелец файлов на удалённом хосте
+    #[serde(default)]
+    pub target_user: Option<String>,
+    /// Разрешить повышение прав через sudo, если администратору не хватает прав
+    #[serde(default)]
+    pub use_sudo: bool,
+    /// Пароль sudo (в состояние не сохраняется)
+    #[serde(skip, default)]
+    pub sudo_password: Option<SecretString>,
     /// Стратегия конфликтов
     pub conflict_strategy: ConflictStrategy,
     /// Спрашивать о конфликтах в консоли (только CLI; GUI использует безопасный default)
@@ -229,6 +241,9 @@ impl WizardConfig {
             archive_path: None,
             passphrase: None,
             ssh: None,
+            target_user: None,
+            use_sudo: false,
+            sudo_password: None,
             conflict_strategy: ConflictStrategy::Ask,
             interactive_conflicts: false,
             dry_run: false,
@@ -849,12 +864,13 @@ impl MigrationWizard {
         })
     }
 
-    /// Создать резервную копию файлов цели, которые могут быть перезаписаны (§9).
+    /// Создать резервную копию локальных файлов цели перед восстановлением (§9).
+    ///
+    /// Для SSH-режима локальная копия не создаётся: цель находится на другом
+    /// хосте. В режиме sudo резервная копия создаётся apply-скриптом на
+    /// приёмнике, а прямой режим работает без автоматической копии.
     pub fn create_backup(&mut self, observer: &dyn ProgressObserver) -> Result<Option<PathBuf>> {
-        if !matches!(
-            self.config.mode,
-            MigrationMode::Restore | MigrationMode::SshDirect
-        ) {
+        if self.config.mode != MigrationMode::Restore {
             return Ok(None);
         }
         if self.config.dry_run || !self.config.auto_backup {
@@ -1211,25 +1227,275 @@ impl MigrationWizard {
             ));
         }
 
+        let mut target_home = self
+            .config
+            .target_home
+            .display()
+            .to_string()
+            .trim_end_matches('/')
+            .to_string();
+        let requested_user = self.config.target_user.clone();
+        let use_sudo = self.config.use_sudo;
+        let password = self.config.sudo_password.take();
         let transfer = SshTransfer::new(target);
-        let options = SshTransferOptions {
+        let mut options = SshTransferOptions {
             dry_run: self.config.dry_run,
             compress: true,
             rate_limit_kbps: self.config.rate_limit / 1024,
             delete_extra: false,
+            verify: self.config.verify,
+            use_rsync: true,
         };
 
-        if !self.config.dry_run {
-            transfer.check_connection()?;
+        transfer.check_connection()?;
+        target_home = transfer.resolve_remote_home(&target_home)?;
+        let preflight = transfer.preflight(&target_home, requested_user.as_deref())?;
+        let local_rsync = local_rsync_available();
+        options.use_rsync = preflight.rsync_available && local_rsync;
+        if !preflight.target_user_exists {
+            return Err(MigrationError::InvalidInput(format!(
+                "целевой пользователь '{}' не найден на приёмнике; создайте его \
+                 или укажите существующего через --target-user",
+                preflight.target_user
+            )));
+        }
+        if preflight.target_home_exists
+            && preflight
+                .target_home_owner
+                .as_deref()
+                .is_some_and(|owner| owner != preflight.target_user.as_str())
+        {
+            report.warnings.push(format!(
+                "владелец {} — {}, а файлы будут принадлежать {}; существующие \
+                 файлы, не попавшие в перенос, останутся у прежнего владельца",
+                target_home,
+                preflight.target_home_owner.as_deref().unwrap_or("?"),
+                preflight.target_user
+            ));
         }
 
+        let needs_sudo = preflight.access_mode == SshAccessMode::Sudo;
+        if needs_sudo && !preflight.target_home_matches_user {
+            return Err(MigrationError::InvalidInput(format!(
+                "целевой каталог '{}' не совпадает с домашним каталогом \
+                 пользователя '{}' ('{}'). В режиме sudo разрешена запись \
+                 только в домашний каталог целевого пользователя.",
+                target_home,
+                preflight.target_user,
+                preflight.target_user_home.as_deref().unwrap_or("?")
+            )));
+        }
+        if self.config.dry_run {
+            report.add_recommendation(format!(
+                "пробный запуск: целевой каталог {}; режим {}; передача не выполняется",
+                target_home,
+                if needs_sudo {
+                    "sudo (staging + apply)"
+                } else {
+                    "прямая запись"
+                }
+            ));
+            if needs_sudo {
+                if !use_sudo && password.is_none() {
+                    report.warnings.push(
+                        "требуется режим sudo, но он не разрешён: добавьте --sudo \
+                         (и при необходимости --ask-sudo-password)"
+                            .to_string(),
+                    );
+                }
+                if !preflight.sudo_available {
+                    report
+                        .warnings
+                        .push("на приёмнике не найден /usr/bin/sudo".to_string());
+                } else if !preflight.sudo_passwordless {
+                    report.add_recommendation(
+                        "для применения потребуется пароль sudo (--ask-sudo-password)".to_string(),
+                    );
+                }
+                if !preflight.rsync_available {
+                    report
+                        .warnings
+                        .push("на приёмнике не найден rsync".to_string());
+                }
+            }
+            return Ok(());
+        }
+
+        let allow_sudo = use_sudo || password.is_some();
+        if needs_sudo && !allow_sudo {
+            return Err(MigrationError::SudoRequired(format!(
+                "для записи в {} права администратора '{}' недостаточны. \
+                 Включите sudo и укажите пароль sudo. Беспарольный режим \
+                 возможен, только если на приёмнике разрешён `sudo -n true`.",
+                target_home, preflight.login_user
+            )));
+        }
+        if needs_sudo && !preflight.sudo_available {
+            return Err(MigrationError::SudoRequired(
+                "на приёмнике не найден /usr/bin/sudo; установите sudo".to_string(),
+            ));
+        }
+        if needs_sudo && !preflight.rsync_available {
+            return Err(MigrationError::Unsupported(
+                "на приёмнике не найден rsync: он нужен для привилегированного \
+                 применения staging"
+                    .to_string(),
+            ));
+        }
+        if needs_sudo && !preflight.sudo_passwordless {
+            let Some(password) = password.as_ref().filter(|value| !value.is_empty()) else {
+                return Err(MigrationError::SudoRequired(format!(
+                    "для записи в {} требуется пароль sudo (пользователь {})",
+                    target_home, preflight.target_user
+                )));
+            };
+            transfer.check_sudo_password(password)?;
+        }
+
+        check_ssh_space(&preflight, inventory.total_size, needs_sudo)?;
+
+        let items = self.collect_ssh_items(&inventory)?;
+        if !needs_sudo {
+            report.add_recommendation(format!(
+                "режим SSH: прямая запись от '{}' в {}",
+                preflight.login_user, target_home
+            ));
+            report.warnings.push(
+                "прямой SSH-режим не создаёт резервную копию на приёмнике; \
+                 для автоматической копии используйте режим sudo"
+                    .to_string(),
+            );
+            transfer.ensure_remote_dir(&target_home)?;
+            let has_ssh = items
+                .iter()
+                .any(|(_, relative)| relative.starts_with(".ssh"));
+            if has_ssh {
+                transfer.ensure_remote_dir(&format!("{}/.ssh", target_home))?;
+            }
+            for (local, relative) in items {
+                self.cancel.check()?;
+                let relative_remote = relative_to_remote(&relative)?;
+                let remote = if relative_remote.is_empty() {
+                    target_home.clone()
+                } else {
+                    format!("{}/{}", target_home, relative_remote)
+                };
+                observer.on_message(&format!("передача {}", local.display()));
+                let result = transfer.push(&local, &remote, &options)?;
+                report.stats.files_copied += result.files;
+                report.stats.bytes_copied += result.bytes;
+            }
+            if has_ssh {
+                transfer.fix_ssh_permissions(&target_home)?;
+                report.add_recommendation(
+                    "права .ssh проверены: каталог 0700, файлы 0600".to_string(),
+                );
+            }
+            if self.config.verify {
+                if preflight.rsync_available && local_rsync {
+                    report.add_recommendation(
+                        "содержимое проверено по контрольным суммам rsync".to_string(),
+                    );
+                } else if !preflight.rsync_available {
+                    report.warnings.push(
+                        "на приёмнике нет rsync: передача через scp без проверки по контрольным суммам"
+                            .to_string(),
+                    );
+                } else {
+                    report.warnings.push(
+                        "локально нет rsync: передача через scp без проверки по контрольным суммам"
+                            .to_string(),
+                    );
+                }
+            }
+            return Ok(());
+        }
+
+        // Прав администратора недостаточно или нужен другой владелец файлов.
+        // Сначала складываем данные в staging, затем одним скриптом применяем
+        // их от root. Пароль sudo идёт только в stdin SSH.
+        let operation_id = ssh_operation_id();
+        let stage_root = format!(
+            "{}/.cache/migration-master/stage/{}",
+            preflight.login_home.trim_end_matches('/'),
+            operation_id
+        );
+        transfer.prepare_staging(&stage_root)?;
+        let backup_dir = self
+            .config
+            .auto_backup
+            .then(|| format!("{}/.migration-master-backup/{}", target_home, operation_id));
+        let apply_options = ApplyStagedOptions {
+            target_home: target_home.clone(),
+            target_user: preflight.target_user.clone(),
+            backup_dir: backup_dir.clone(),
+            verify: self.config.verify,
+        };
+
+        let staged = (|| -> Result<()> {
+            for (local, relative) in items {
+                self.cancel.check()?;
+                observer.on_message(&format!("staging {}", local.display()));
+                let result = transfer.push_staged(&local, &relative, &stage_root, &options)?;
+                report.stats.files_copied += result.files;
+                report.stats.bytes_copied += result.bytes;
+            }
+            observer.on_message(&format!("применение staging от root в {}", target_home));
+            let apply_result =
+                transfer.apply_staged(&stage_root, &apply_options, password.as_ref())?;
+            if !apply_result.stderr.trim().is_empty() {
+                report
+                    .warnings
+                    .push(format!("apply-скрипт: {}", apply_result.stderr.trim()));
+            }
+            Ok(())
+        })();
+
+        // staging удаляется скриптом при успехе; при ошибке убираем его как
+        // администратор, чтобы не оставлять копию профиля на диске.
+        let cleanup = transfer.cleanup_staging(&stage_root);
+        if let Err(error) = staged {
+            if let Err(cleanup_error) = cleanup {
+                report.warnings.push(format!(
+                    "не удалось удалить staging {}: {}",
+                    stage_root, cleanup_error
+                ));
+            }
+            return Err(error);
+        }
+        if let Err(error) = cleanup {
+            report.warnings.push(format!(
+                "не удалось проверить удаление staging {}: {}",
+                stage_root, error
+            ));
+        }
+
+        report.add_recommendation(format!(
+            "режим SSH: sudo; файлы принадлежат {}",
+            preflight.target_user
+        ));
+        if let Some(backup_dir) = backup_dir {
+            report.add_recommendation(format!("резервная копия: {}", backup_dir));
+        }
+        if preflight.restorecon_available {
+            report.add_recommendation("SELinux-контексты обновлены через restorecon".to_string());
+        }
+        if self.config.verify {
+            report
+                .add_recommendation("содержимое проверено по контрольным суммам rsync".to_string());
+        }
+        Ok(())
+    }
+
+    /// Собрать список локальных путей и их относительных назначений для SSH.
+    fn collect_ssh_items(&self, inventory: &ScanInventory) -> Result<Vec<(PathBuf, PathBuf)>> {
+        let mut items = Vec::new();
         for component in self.config.components.clone() {
             for root in scan_roots_for_component(
                 component,
                 &self.config.source_home,
                 &self.config.app_rules,
             ) {
-                self.cancel.check()?;
                 if !root.exists() {
                     continue;
                 }
@@ -1241,35 +1507,16 @@ impl MigrationWizard {
                         .iter()
                         .filter(|item| item.relative.starts_with(".ssh"))
                     {
-                        self.cancel.check()?;
-                        let remote = format!(
-                            "{}/{}",
-                            self.config.target_home.display(),
-                            item.relative.to_string_lossy()
-                        );
-                        observer.on_message(&format!("передача {}", item.source.display()));
-                        let result = transfer.push(&item.source, &remote, &options)?;
-                        report.stats.files_copied += result.files;
-                        report.stats.bytes_copied += result.bytes;
+                        items.push((item.source.clone(), item.relative.clone()));
                     }
                     continue;
                 }
 
                 let relative = crate::security::make_relative(&self.config.source_home, &root)?;
-                let remote = format!(
-                    "{}/{}",
-                    self.config.target_home.display(),
-                    relative.display()
-                );
-                observer.on_message(&format!("передача {}", root.display()));
-
-                let result = transfer.push(&root, &remote, &options)?;
-                report.stats.files_copied += result.files;
-                report.stats.bytes_copied += result.bytes;
+                items.push((root, relative));
             }
         }
-
-        Ok(())
+        Ok(items)
     }
 
     /// Этап 10: проверка результата и рекомендации (§4, §11, §13).
@@ -1464,6 +1711,87 @@ impl MigrationWizard {
             let _ = database.save_migration(&record);
         }
     }
+}
+
+/// Проверить свободное место под прямую передачу или staging.
+fn check_ssh_space(preflight: &SshPreflight, total_size: u64, needs_sudo: bool) -> Result<()> {
+    if total_size == 0 {
+        return Ok(());
+    }
+    let Some(target_free) = preflight.target_available_bytes else {
+        return Ok(());
+    };
+    if !needs_sudo {
+        if target_free < total_size {
+            return Err(MigrationError::InsufficientSpace {
+                required: total_size,
+                available: target_free,
+            });
+        }
+        return Ok(());
+    }
+
+    if let Some(staging_free) = preflight.staging_available_bytes {
+        if preflight.same_filesystem {
+            // staging и цель на одном разделе: на время apply нужны две копии.
+            let required = total_size.saturating_mul(2);
+            if target_free < required {
+                return Err(MigrationError::InsufficientSpace {
+                    required,
+                    available: target_free,
+                });
+            }
+        } else {
+            if staging_free < total_size {
+                return Err(MigrationError::InsufficientSpace {
+                    required: total_size,
+                    available: staging_free,
+                });
+            }
+            if target_free < total_size {
+                return Err(MigrationError::InsufficientSpace {
+                    required: total_size,
+                    available: target_free,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Уникальный идентификатор SSH-операции (без секретов).
+fn ssh_operation_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{}", nanos, std::process::id())
+}
+
+/// Преобразовать локальный относительный путь в путь для удалённого shell.
+fn relative_to_remote(path: &Path) -> Result<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                let part = part.to_string_lossy();
+                if part.contains('\n') || part.contains('\r') || part.contains('\0') {
+                    return Err(MigrationError::InvalidInput(
+                        "некорректный относительный путь".to_string(),
+                    ));
+                }
+                parts.push(part.into_owned());
+            }
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(MigrationError::InvalidInput(format!(
+                    "недопустимый компонент пути: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(parts.join("/"))
 }
 
 /// Пути сканирования компонента: стандартные каталоги + пути правил приложений.
@@ -1681,7 +2009,11 @@ fn apply_scan_warnings(inventory: &ScanInventory, report: &mut MigrationReport) 
                 .map(|path| format!("{}: исключение", path)),
         );
     }
-    if !inventory.private_keys.is_empty() {
+    let private_keys_included = inventory
+        .items
+        .iter()
+        .any(|item| is_private_key(&item.relative));
+    if !inventory.private_keys.is_empty() && !private_keys_included {
         report.skipped_files.extend(
             inventory
                 .private_keys
@@ -2130,6 +2462,23 @@ mod tests {
     }
 
     #[test]
+    fn test_ssh_direct_skips_local_backup() {
+        let dir = tempdir().expect("tempdir");
+        let home = make_home(dir.path());
+        let target = dir.path().join("remote-like-target");
+        std::fs::create_dir_all(target.join("Documents")).expect("mkdir");
+        std::fs::write(target.join("Documents/doc.txt"), b"old").expect("write");
+
+        let mut config = base_config(dir.path(), MigrationMode::SshDirect, &home);
+        config.target_home = target;
+        let mut wizard = MigrationWizard::new(config);
+
+        let backup = wizard.create_backup(&NoProgress).expect("backup");
+        assert!(backup.is_none());
+        assert!(!dir.path().join("backups").exists());
+    }
+
+    #[test]
     fn test_restore_requires_target_home() {
         let dir = tempdir().expect("tempdir");
         let home = make_home(dir.path());
@@ -2158,6 +2507,9 @@ mod tests {
         let home = make_home(dir.path());
         let mut config = base_config(dir.path(), MigrationMode::SshDirect, &home);
         config.passphrase = Some("super-secret".to_string());
+        config.target_user = Some("timopheevsi".to_string());
+        config.use_sudo = true;
+        config.sudo_password = Some(SecretString::new("sudo-super-secret"));
 
         let mut wizard = MigrationWizard::new(config);
         wizard.next_step();
@@ -2168,12 +2520,23 @@ mod tests {
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(!text.contains("super-secret"), "пароль не сохраняется");
         assert!(!text.contains("passphrase"), "поле секрета отсутствует");
+        assert!(
+            !text.contains("sudo-super-secret"),
+            "пароль sudo не сохраняется"
+        );
+        assert!(
+            !text.contains("sudo_password"),
+            "поле пароля sudo отсутствует"
+        );
+        assert!(text.contains("timopheevsi"));
+        assert!(text.contains("\"use_sudo\": true"));
 
         let state = WizardState::load(&path).expect("load");
         let restored = MigrationWizard::restore_state(state);
         assert_eq!(restored.step(), WizardStep::Connection);
         assert_eq!(restored.config().mode, MigrationMode::SshDirect);
         assert!(restored.config().passphrase.is_none());
+        assert!(restored.config().sudo_password.is_none());
         assert!(!restored.cancel_token().is_cancelled());
 
         WizardState::clear(&path).expect("clear");

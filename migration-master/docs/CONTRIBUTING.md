@@ -6,7 +6,7 @@ CLI, и из окна мастера.
 
 ## Требования
 
-- Rust 1.75+ (edition 2021)
+- Rust 1.89+ (edition 2021)
 - Для GUI: `gtk4-devel`, `libadwaita-devel` (Linux)
 - Для сборки RPM: `rpm-build`, `rpmdevtools`
 

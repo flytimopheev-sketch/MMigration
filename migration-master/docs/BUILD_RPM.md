@@ -14,7 +14,7 @@ rpmdev-setuptree
 
 ```bash
 cd ~/rpmbuild/SOURCES
-tar czf migration-master-0.2.0.tar.gz --transform 's,^,migration-master-0.2.0/,' \
+tar czf migration-master-0.3.0.tar.gz --transform 's,^,migration-master-0.3.0/,' \
     -C /путь/к/репозиторию migration-master
 ```
 
@@ -31,7 +31,7 @@ cp rpm/migration-master.spec ~/rpmbuild/SPECS/
 rpmbuild -ba ~/rpmbuild/SPECS/migration-master.spec
 ```
 
-Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.2.0-1.<dist>.x86_64.rpm`.
+Результат: `~/rpmbuild/RPMS/x86_64/migration-master-0.3.0-1.<dist>.x86_64.rpm`.
 
 **Графический мастер собирается по умолчанию.** Пакет без GUI получается
 явным флагом `--without gui`:
@@ -143,7 +143,7 @@ rpm -qpR ~/rpmbuild/RPMS/x86_64/migration-master-*.rpm
 ## Установка и smoke-тест
 
 ```bash
-sudo dnf install ./migration-master-0.2.0-1.x86_64.rpm
+sudo dnf install ./migration-master-0.3.0-1.x86_64.rpm
 
 migration-master --version
 migration-master scan --quick
@@ -161,7 +161,7 @@ ls /usr/share/applications/migration-master.desktop
 | `error: Failed buildRequires: pkgconfig(gtk4)` | `sudo dnf install gtk4-devel` |
 | Установка падает: `libc.so.6(GLIBC_2.xx)(64bit) is needed` / `lib...so not found` | пакет собран на чужой ОС с более новым glibc — пересоберите `rpmbuild ... --with musl` (см. раздел «Сборка для любой РЕД ОС») или на самой РЕД ОС |
 | `%check` падает | `cargo test --release` в каталоге исходников — логи ошибок |
-| `No such file or directory: target/release/migration-master` | в `%build` не запустилась сборка, проверьте версию rust ≥ 1.75 |
+| `No such file or directory: target/release/migration-master` | в `%build` не запустилась сборка, проверьте версию rust ≥ 1.89 |
 | Устаревшая политика PolicyKit | тест `polkit::tests::test_shipped_policy_matches_render` подскажет: перегенерируйте `resources/com.redos.migration-master.policy` командой `cargo test --lib update_shipped_policy -- --ignored` |
 
 ## Чистая сборка (mock)

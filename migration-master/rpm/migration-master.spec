@@ -1,5 +1,5 @@
 Name:           migration-master
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Мастер миграции пользователя для РЕД ОС Linux
 License:        GPL-3.0
@@ -38,7 +38,7 @@ Source0:        %{name}-%{version}.tar.gz
 %global bin_dir target/release
 %endif
 
-BuildRequires:  rust >= 1.75
+BuildRequires:  rust >= 1.89
 BuildRequires:  cargo
 BuildRequires:  gcc
 BuildRequires:  pkgconfig(sqlite3)
@@ -53,6 +53,9 @@ BuildRequires:  pkgconfig(libadwaita-1)
 Requires:       polkit
 Requires:       openssh-clients
 Requires:       cups
+# rsync нужен для привилегированного применения staging на приёмнике и
+# используется как быстрый транспорт при прямой SSH-миграции.
+Requires:       rsync
 %if %{build_gui}
 # Графический мастер использует только GTK4 и libadwaita 1.0, но RPM
 # автоматически добавляет зависимость только по soname (libadwaita-1.so.0),
@@ -198,6 +201,19 @@ fi
 %{_mandir}/man1/migration-master.1.gz
 
 %changelog
+* Mon Nov 16 2026 Migration Master Team <team@redos.local> - 0.3.0-1
+- Безопасная привилегированная миграция по SSH: подключение обычным
+  администратором по ключу, preflight без sudo, staging 0700 и apply от root
+- CLI: --target-user, --sudo, --ask-sudo-password; ~ и ~/путь разворачиваются
+  на приёмнике
+- Пароль sudo передаётся только в stdin, хранится в очищаемой памяти и не
+  попадает в argv, отчёты, журналы и файлы
+- GUI: поля пользователя на приёмнике, sudo и пароля sudo; пароль очищается
+- Apply-скрипт: проверка getent/realpath, запрет системных каталогов и их
+  подкаталогов, backup внутри домашнего каталога, rsync --chown, права .ssh и
+  restorecon
+- Добавлена зависимость rsync; обновлены руководства, man-страница и SECURITY
+
 * Mon Nov 09 2026 Migration Master Team <team@redos.local> - 0.2.0-1
 - Пакеты, принтеры, dconf и cron сохраняются в manifest и применяются через
   helper/PolicyKit либо от имени пользователя только по явному согласию

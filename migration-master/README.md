@@ -11,7 +11,10 @@
 ## Возможности
 
 - **Создание зашифрованного архива** профиля пользователя
-- **Прямая миграция по SSH** между компьютерами (`scp` или `rsync --partial`)
+- **Прямая миграция по SSH** между компьютерами (`rsync --partial`, а при его
+  отсутствии `scp`) с безопасным повышением прав: подключение обычным
+  администратором по ключу, preflight без sudo, staging + apply от root, пароль
+  sudo только в stdin
 - **Восстановление из архива** с выбором компонентов, предпросмотром,
   отменой, автоматическим backup и отчётом
 - **Перенос файлов и настроек** из `~/.config` и `~/.local/share` с учётом
@@ -66,7 +69,7 @@ SELinux/capabilities/hardlinks в архиве и расширенные e2e-т�
 | [Установка](docs/INSTALL.md) | RPM и сборка из исходников, внешние утилиты |
 | [Руководство пользователя](docs/USER_GUIDE_RU.md) | оба режима миграции, компоненты, конфликты |
 | [Образ хоста без root](docs/HOST_IMAGE.md) | снимок профиля, дополнения, полный образ диска |
-| [План улучшений](docs/IMPROVEMENTS.md) | статус P0/P1 в 0.2.0 и оставшиеся пункты |
+| [План улучшений](docs/IMPROVEMENTS.md) | статус P0/P1 в 0.2.0/0.3.0 и оставшиеся пункты |
 | [Безопасность](docs/SECURITY.md) | модель угроз, шифрование, path traversal, polkit |
 | [Резервное копирование](docs/BACKUP.md) | создание, проверка и откат копий |
 | [Восстановление после ошибки](docs/RECOVERY.md) | откат и разбор сбоев |
@@ -84,11 +87,12 @@ SELinux/capabilities/hardlinks в архиве и расширенные e2e-т�
 ## Требования
 
 - РЕД ОС Linux (x86_64)
-- Rust 1.75+
+- Rust 1.89+
 - GTK4 ≥ 4.0 и libadwaita ≥ 1.0 (для GUI; на РЕД ОС 8 — `gtk4` и `libadwaita`)
 - OpenSSH клиент (`ssh`, `scp`)
 - CUPS (`lpstat`) — необязательно, только для списка принтеров
-- `rsync` — необязательно, ускоряет SSH-передачу
+- `rsync` — необязательно для прямой передачи; обязателен на приёмнике для режима sudo
+- `sudo`, `getent`, `realpath`, `/bin/bash` — на приёмнике для привилегированного staging
 - `tar`, `zstd`, `gpg` — необязательно, для ручных дополнительных архивов
 
 Сами `.rmm` создаются Rust-библиотеками; внешние `tar`/`zstd` для работы
@@ -128,10 +132,10 @@ cargo build --features gui --release
 
 ```bash
 # Скачать последний релиз
-gh release download v0.2.0 -p '*.rpm'
+gh release download v0.3.0 -p '*.rpm'
 
 # Установить на РЕД ОС
-sudo dnf install ./migration-master-0.2.0-1.x86_64.rpm
+sudo dnf install ./migration-master-0.3.0-1.x86_64.rpm
 ```
 
 Пакет собирается в CI на Linux (без Docker): workflow
@@ -302,7 +306,7 @@ migration-master/
   "source_user": "user",
   "source_uid": 1000,
   "source_gid": 1000,
-  "app_version": "0.2.0",
+  "app_version": "0.3.0",
   "os_info": {
     "name": "РЕД ОС",
     "version": "8.0",

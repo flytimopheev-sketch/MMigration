@@ -1,5 +1,7 @@
 //! Системные настройки пользователя: сбор и восстановление.
 
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
@@ -53,10 +55,7 @@ impl SystemSettings {
             if path.is_dir() {
                 copy_dir(&path, &target)?;
             } else {
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::copy(&path, &target)?;
+                copy_file(&path, &target)?;
             }
             copied += 1;
         }
@@ -217,13 +216,30 @@ fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
     for entry in std::fs::read_dir(source)?.flatten() {
         let path = entry.path();
         let target = destination.join(entry.file_name());
-        if path.is_dir() {
+        let file_type = std::fs::symlink_metadata(&path)?.file_type();
+        if file_type.is_dir() {
             copy_dir(&path, &target)?;
-        } else {
-            std::fs::copy(&path, &target)?;
+        } else if file_type.is_file() {
+            copy_file(&path, &target)?;
         }
+        // Символические ссылки пропускаем: они могут вести за пределы профиля
+        // или образовывать цикл.
     }
 
+    Ok(())
+}
+
+fn copy_file(source: &Path, destination: &Path) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut input = File::open(source)?;
+    let mut output = File::create(destination)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.flush()?;
+    if let Ok(metadata) = input.metadata() {
+        let _ = std::fs::set_permissions(destination, metadata.permissions());
+    }
     Ok(())
 }
 

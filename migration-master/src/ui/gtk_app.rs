@@ -25,7 +25,7 @@ use crate::file_transfer::ProgressObserver;
 use crate::polkit::PolkitManager;
 use crate::report::{render_history_text, MigrationReport};
 use crate::security::{estimate_password_strength, generate_password, password_strength_label};
-use crate::ssh_transfer::SshTarget;
+use crate::ssh_transfer::{default_remote_home, SecretString, SshTarget};
 use crate::ui::main_screen::MainScreenInfo;
 use crate::ui::util::{
     conflict_strategy, parse_ssh_target, DEFAULT_STRATEGY_INDEX, STRATEGY_LABELS,
@@ -1248,7 +1248,7 @@ fn bind_create_action(
                 if report.errors.is_empty() && !report.cancelled {
                     Ok(summary)
                 } else {
-                    Err(MigrationError::Conflict(summary))
+                    Err(MigrationError::OperationFailed(summary))
                 }
             },
             move |success, summary| {
@@ -1701,7 +1701,7 @@ fn bind_restore_action(
                 if report.errors.is_empty() && !report.cancelled {
                     Ok(summary)
                 } else {
-                    Err(MigrationError::Conflict(summary))
+                    Err(MigrationError::OperationFailed(summary))
                 }
             },
             move |success, summary| {
@@ -1744,6 +1744,15 @@ fn ssh_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     form.add(&entry_row(
         "Домашний каталог на удалённом хосте",
         &remote_entry,
+    ));
+
+    let target_user_entry = gtk::Entry::builder()
+        .placeholder_text("необязательно; по владельцу каталога")
+        .hexpand(true)
+        .build();
+    form.add(&entry_row(
+        "Целевой пользователь (владелец файлов)",
+        &target_user_entry,
     ));
 
     content.append(&form);
@@ -1796,6 +1805,39 @@ fn ssh_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
     options_group.add(&authorized_keys_row);
     content.append(&options_group);
 
+    let sudo_group = adw::PreferencesGroup::builder()
+        .title("Права на приёмнике")
+        .description(
+            "Если администратору не хватает прав на целевой каталог, данные \
+             сначала складываются в staging и применяются от root одним скриптом. \
+             Пароль sudo не сохраняется и передаётся только по SSH.",
+        )
+        .build();
+    let sudo_row = adw::ActionRow::builder()
+        .title("Использовать sudo при необходимости")
+        .subtitle("Без root-входа по SSH")
+        .build();
+    let sudo_check = gtk::CheckButton::new();
+    sudo_check.set_active(true);
+    sudo_check.set_valign(gtk::Align::Center);
+    sudo_row.add_suffix(&sudo_check);
+    sudo_row.set_activatable_widget(Some(&sudo_check));
+    sudo_group.add(&sudo_row);
+
+    let (sudo_pass_entry, sudo_pass_widget) = password_entry();
+    sudo_pass_entry.set_placeholder_text(Some("Пароль sudo (если требуется)"));
+    sudo_group.add(&entry_row(
+        "Пароль sudo (только в памяти)",
+        &sudo_pass_widget,
+    ));
+    {
+        let pass_widget = sudo_pass_widget.clone();
+        sudo_check.connect_toggled(move |check| {
+            pass_widget.set_sensitive(check.is_active());
+        });
+    }
+    content.append(&sudo_group);
+
     let run_button = gtk::Button::with_label("Начать перенос");
     run_button.add_css_class("suggested-action");
     let cancel_slot = new_cancel_slot();
@@ -1823,9 +1865,12 @@ fn ssh_page(window: &adw::ApplicationWindow, nav: &Navigator) -> gtk::Box {
         &status,
         &target_entry,
         &remote_entry,
+        &target_user_entry,
         &dry_check,
         &private_keys_check,
         &authorized_keys_check,
+        &sudo_check,
+        &sudo_pass_entry,
     );
 
     page_frame("Перенос по SSH", &content, nav, false)
@@ -1842,9 +1887,12 @@ fn bind_ssh_action(
     status: &gtk::Label,
     target_entry: &gtk::Entry,
     remote_entry: &gtk::Entry,
+    target_user_entry: &gtk::Entry,
     dry_check: &gtk::CheckButton,
     private_keys_check: &gtk::CheckButton,
     authorized_keys_check: &gtk::CheckButton,
+    sudo_check: &gtk::CheckButton,
+    sudo_pass_entry: &gtk::Entry,
 ) {
     let window = (*window).clone();
     let run_widget = (*run_button).clone();
@@ -1854,9 +1902,12 @@ fn bind_ssh_action(
     let status = (*status).clone();
     let target_entry = (*target_entry).clone();
     let remote_entry = (*remote_entry).clone();
+    let target_user_entry = (*target_user_entry).clone();
     let dry_check = (*dry_check).clone();
     let private_keys_check = (*private_keys_check).clone();
     let authorized_keys_check = (*authorized_keys_check).clone();
+    let sudo_check = (*sudo_check).clone();
+    let sudo_pass_entry = (*sudo_pass_entry).clone();
 
     run_widget.connect_clicked(move |button| {
         let Some((user, host, port)) = parse_ssh_target(&target_entry.text()) else {
@@ -1868,13 +1919,17 @@ fn bind_ssh_action(
             return;
         };
 
+        let target_user = {
+            let text = target_user_entry.text().trim().to_string();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        };
         let remote = remote_entry.text().to_string();
         let remote_home = if remote.trim().is_empty() {
-            if user.is_empty() {
-                "~".to_string()
-            } else {
-                format!("/home/{}", user)
-            }
+            default_remote_home(&user, target_user.as_deref())
         } else {
             remote.trim().to_string()
         };
@@ -1887,12 +1942,27 @@ fn bind_ssh_action(
             known_hosts_file: None,
         };
 
+        let sudo_password = if sudo_check.is_active() {
+            let password = sudo_pass_entry.text().to_string();
+            if password.is_empty() {
+                None
+            } else {
+                Some(SecretString::new(password))
+            }
+        } else {
+            None
+        };
+        sudo_pass_entry.set_text("");
+
         let token = begin_operation(&slot);
         let mut wizard_config = WizardConfig::new(MigrationMode::SshDirect, default_home());
         wizard_config.target_home = PathBuf::from(remote_home);
         wizard_config.components = ComponentType::default_components();
         wizard_config.app_rules = crate::applications::load_effective_rules();
         wizard_config.ssh = Some(ssh);
+        wizard_config.target_user = target_user;
+        wizard_config.use_sudo = sudo_check.is_active();
+        wizard_config.sudo_password = sudo_password;
         wizard_config.dry_run = dry_check.is_active();
         wizard_config.include_private_ssh_keys = private_keys_check.is_active();
         wizard_config.include_authorized_keys = authorized_keys_check.is_active();
@@ -1916,7 +1986,7 @@ fn bind_ssh_action(
                 if report.errors.is_empty() && !report.cancelled {
                     Ok(summary)
                 } else {
-                    Err(MigrationError::Conflict(summary))
+                    Err(MigrationError::OperationFailed(summary))
                 }
             },
             move |success, summary| {

@@ -165,11 +165,11 @@ impl BackupManager {
                         continue;
                     }
                     let rel = security::make_relative(base, entry.path())?;
-                    builder.append_path_with_name(entry.path(), rel)?;
+                    append_file(&mut builder, entry.path(), &rel)?;
                     files_count += 1;
                 }
             } else {
-                builder.append_path_with_name(&source, &relative_path)?;
+                append_file(&mut builder, &source, &relative_path)?;
                 files_count += 1;
             }
         }
@@ -201,6 +201,22 @@ pub struct BackupRestoreStats {
     pub restored_bytes: u64,
     /// Пропущено записей
     pub skipped: u64,
+}
+
+/// Добавить файл в tar вручную, не используя `append_path_with_name`.
+///
+/// На некоторых файловых системах (например, WSL1) копирование через
+/// `std::io::copy` внутри tar может дать нулевое содержимое. `append_data`
+/// читает файл через обычный буфер и ведёт себя предсказуемее.
+fn append_file<W: Write>(builder: &mut tar::Builder<W>, source: &Path, name: &Path) -> Result<()> {
+    let mut file = File::open(source)?;
+    let metadata = file.metadata()?;
+    let mut header = tar::Header::new_gnu();
+    header.set_metadata(&metadata);
+    header.set_size(metadata.len());
+    header.set_cksum();
+    builder.append_data(&mut header, name, &mut file)?;
+    Ok(())
 }
 
 impl BackupManager {
@@ -298,11 +314,16 @@ impl BackupManager {
                 std::fs::create_dir_all(parent)?;
             }
 
-            tar_entry.unpack(&destination)?;
-
-            if let Ok(mode) = tar_entry.header().mode() {
-                let _ = crate::platform::set_mode(&destination, mode);
+            let temp = crate::file_transfer::temp_path_for(&destination);
+            {
+                let mut output = File::create(&temp)?;
+                std::io::copy(&mut tar_entry, &mut output)?;
+                output.flush()?;
             }
+            if let Ok(mode) = tar_entry.header().mode() {
+                let _ = crate::platform::set_mode(&temp, mode);
+            }
+            crate::file_transfer::replace_atomically(&temp, &destination)?;
 
             stats.restored_files += 1;
             stats.restored_bytes += tar_entry.size();

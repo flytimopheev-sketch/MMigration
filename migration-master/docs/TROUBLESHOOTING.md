@@ -139,6 +139,86 @@ migration-master migrate-ssh user@host --identity ~/.ssh/id_ed25519 --dry-run
 Проверьте права: `~/.ssh` — `0700`, ключ — `0600`, владелец — текущий
 пользователь.
 
+### `Требуется sudo` / `требуется пароль sudo`
+
+Мастер подключается обычным администратором и сам проверяет, хватает ли прав
+на целевой каталог. Если каталог принадлежит другому пользователю, нужен
+режим sudo:
+
+```bash
+migration-master migrate-ssh admin@host \
+  --remote-home /home/timopheevsi --target-user timopheevsi \
+  --sudo --ask-sudo-password
+```
+
+Пароль вводится в терминале и передаётся только в stdin SSH; он не попадает в
+`argv`, историю, отчёты и файлы. В GUI используйте поле «Пароль sudo» на
+странице SSH. Если пароль не нужен (настроен `NOPASSWD`), достаточно
+`--sudo` или галочки sudo в GUI.
+
+Проверьте на приёмнике:
+
+```bash
+id admin
+sudo -n true && echo 'sudo без пароля' || echo 'sudo требует пароль'
+getent passwd timopheevsi
+command -v rsync realpath getent
+```
+
+### `целевой каталог не совпадает с домашним каталогом`
+
+В режиме sudo разрешена запись только в домашний каталог целевого
+пользователя из `getent passwd` (с учётом `realpath`). Это защита от записи
+от root в системный каталог. Укажите точный домашний каталог:
+
+```bash
+getent passwd timopheevsi | cut -d: -f6
+# /home/timopheevsi
+migration-master migrate-ssh admin@host \
+  --remote-home /home/timopheevsi --target-user timopheevsi --sudo
+```
+
+Если домашний каталог пользователя действительно расположен в нестандартном
+месте, укажите его из `getent passwd`; символические ссылки разрешаются.
+
+### `на приёмнике не найден rsync` / `getent` / `realpath`
+
+Для привилегированного применения staging на приёмнике нужны `rsync`,
+`getent` (glibc) и `realpath` (coreutils), а также `/usr/bin/sudo`:
+
+```bash
+sudo dnf install rsync glibc coreutils sudo
+```
+
+Без `rsync` привилегированный режим недоступен: остаётся только прямой режим,
+когда администратор сам владеет целевым каталогом. Отдельного удалённого
+helper в 0.3.0 нет.
+
+### `sudo требует терминал (requiretty)`
+
+Если в `sudoers` включён `requiretty`, `sudo -S` не сможет прочитать пароль
+из stdin. Отключите `requiretty` для учётной записи администратора или
+разрешите беспарольный `sudo` в соответствии с политикой безопасности:
+
+```bash
+sudo -n true && echo 'sudo без пароля разрешён'
+```
+
+Пароль root по SSH не используется и не требуется. При беспарольном sudo
+пароль вообще не запрашивается; при обычном sudo используется `-S` и stdin.
+
+### Staging остался после ошибки
+
+При успехе apply-скрипт удаляет staging сам. При ошибке мастер пытается
+удалить `<домашний каталог администратора>/.cache/migration-master/stage/<id>`
+и добавляет предупреждение в отчёт, если это не удалось. Проверить вручную:
+
+```bash
+ls -la ~/.cache/migration-master/stage/
+```
+
+Каталог создаётся с правами `0700`; не делайте его общедоступным.
+
 ### Приватные ключи не перенесены
 
 Это ожидаемо: по умолчанию `include_private_ssh_keys = false`, приватные ключи
@@ -260,7 +340,7 @@ rpm -qR migration-master | grep -E 'gtk|adwaita'
 `rpmbuild --without gui`). Поставьте обычный релизный RPM с GUI:
 
 ```bash
-sudo dnf install ./migration-master-0.2.0-1.x86_64.rpm
+sudo dnf install ./migration-master-0.3.0-1.x86_64.rpm
 ```
 
 Сборка из исходников с графической частью:
