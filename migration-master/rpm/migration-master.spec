@@ -38,6 +38,11 @@ Source0:        %{name}-%{version}.tar.gz
 %global bin_dir target/release
 %endif
 
+# Zig-сборка не оставляет build-id, поэтому find-debuginfo создаёт пустой
+# debugfiles.list и rpmbuild падает на подпакете debuginfo. Утилите отладочный
+# подпакет не нужен.
+%global debug_package %{nil}
+
 BuildRequires:  rust >= 1.89
 BuildRequires:  cargo
 BuildRequires:  gcc
@@ -212,6 +217,8 @@ fi
 - Apply-скрипт: проверка getent/realpath, запрет системных каталогов и их
   подкаталогов, backup внутри домашнего каталога, rsync --chown, права .ssh и
   restorecon
+- Отключён debuginfo-подпакет для zig-сборки: пустой debugfiles.list больше не
+  ломает rpmbuild
 - Добавлена зависимость rsync; обновлены руководства, man-страница и SECURITY
 
 * Mon Nov 09 2026 Migration Master Team <team@redos.local> - 0.2.0-1
